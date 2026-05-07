@@ -100,6 +100,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(headers["Anthropic-Beta"]).toContain("advisor-tool-2026-03-01");
 		expect(headers["Anthropic-Beta"]).not.toContain("fine-grained-tool-streaming-2025-05-14");
 		expect(headers["User-Agent"]).toBe(`claude-cli/${claudeCodeVersion} (external, cli)`);
+		expect(headers.Accept).toBe("application/json");
 		expect(headers["x-client-request-id"]).toMatch(/^[0-9a-f-]{36}$/);
 		expect(headers["X-Claude-Code-Session-Id"]).toMatch(/^[0-9a-f-]{36}$/);
 		expect(claudeCodeHeaders["X-Stainless-Package-Version"]).toBe("0.81.0");
@@ -191,7 +192,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(billingText).toContain(`cch=${computeClaudeCch(JSON.stringify(zeroedPayload))}`);
 	});
 
-	it("applies official-style system cache markers without caching the billing header", () => {
+	it("applies official-style system cache markers without caching billing or identity blocks", () => {
 		const blocks = buildAnthropicSystemBlocks(["Stay concise."], {
 			includeClaudeCodeInstruction: true,
 			extraInstructions: ["Use citations when possible"],
@@ -203,7 +204,6 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(blocks?.[1]).toEqual({
 			type: "text",
 			text: claudeCodeSystemInstruction,
-			cache_control: { type: "ephemeral" },
 		});
 		expect(blocks?.[2]).toEqual({
 			type: "text",
@@ -230,6 +230,62 @@ describe("Anthropic request fingerprint alignment", () => {
 			{ type: "text", text: "stable system" },
 			{ type: "text", text: "stable durable context", cache_control: { type: "ephemeral" } },
 		]);
+	});
+
+	it("orders Anthropic OAuth body fields like the official beta messages client", async () => {
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["Stay concise."],
+				messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
+			},
+			{ isOAuth: true, thinkingEnabled: false },
+		)) as Record<string, unknown>;
+
+		expect(Object.keys(payload)).toEqual([
+			"model",
+			"messages",
+			"system",
+			"metadata",
+			"max_tokens",
+			"thinking",
+			"stream",
+		]);
+	});
+
+	it("sends OAuth streams through the beta messages endpoint", async () => {
+		const originalFetch = global.fetch;
+		let requestUrl = "";
+		try {
+			global.fetch = (async (input: string | URL | Request) => {
+				requestUrl = input instanceof Request ? input.url : String(input);
+				return new Response(
+					[
+						'event: message_start\ndata: {"type":"message_start","message":{"model":"claude-sonnet-4-5","id":"msg_mock","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}}',
+						'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+						'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}',
+						'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}',
+						'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}',
+						'event: message_stop\ndata: {"type":"message_stop"}',
+					].join("\n\n"),
+					{ headers: { "content-type": "text/event-stream", "request-id": "req_mock" } },
+				);
+			}) as typeof fetch;
+
+			const stream = streamAnthropic(
+				ANTHROPIC_MODEL,
+				{ messages: [{ role: "user", content: "hello", timestamp: Date.now() }] },
+				{ apiKey: "sk-ant-oat-test", isOAuth: true, thinkingEnabled: false, streamFirstEventTimeoutMs: 0 },
+			);
+			for await (const _event of stream) {
+				// drain
+			}
+			await stream.result();
+
+			expect(requestUrl).toBe("https://api.anthropic.com/v1/messages?beta=true");
+		} finally {
+			global.fetch = originalFetch;
+		}
 	});
 
 	it("uses a single last-message cache marker and adds cache_reference to earlier tool results", async () => {

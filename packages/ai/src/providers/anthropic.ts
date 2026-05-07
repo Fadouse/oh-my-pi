@@ -178,7 +178,7 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 	const extraBetas = options.extraBetas ?? [];
 	const stream = options.stream ?? false;
 	const betaHeader = buildBetaHeader(getClaudeCodeBetas(options.modelId, extraBetas), []);
-	const acceptHeader = stream ? "text/event-stream" : "application/json";
+	const acceptHeader = oauthToken ? "application/json" : stream ? "text/event-stream" : "application/json";
 	const modelHeaders = Object.fromEntries(
 		Object.entries(options.modelHeaders ?? {}).filter(([key]) => !enforcedHeaderKeys.has(key.toLowerCase())),
 	);
@@ -1135,7 +1135,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 					api: output.api,
 					model: model.id,
 					method: "POST",
-					url: `${baseUrl}/v1/messages`,
+					url: `${baseUrl}/v1/messages${isOAuthToken ? "?beta=true" : ""}`,
 					body: nextParams,
 				};
 				return nextParams;
@@ -1161,7 +1161,9 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 					"Anthropic stream timed out while waiting for the first event",
 				);
 				const { requestSignal } = activeAbortTracker;
-				const anthropicRequest = client.messages.create({ ...params, stream: true }, { signal: requestSignal });
+				const anthropicRequest = isOAuthToken
+					? client.beta.messages.create({ ...params, stream: true }, { signal: requestSignal })
+					: client.messages.create({ ...params, stream: true }, { signal: requestSignal });
 				let streamedReplayUnsafeContent = false;
 
 				try {
@@ -1500,10 +1502,6 @@ export function buildAnthropicSystemBlocks(
 
 	if (cacheControl) {
 		if (includeClaudeCodeInstruction && blocks.length > 1) {
-			blocks[1] = {
-				...blocks[1],
-				cache_control: cacheControl,
-			};
 			const lastNonBillingIndex = blocks.length - 1;
 			if (lastNonBillingIndex > 1) {
 				blocks[lastNonBillingIndex] = {
@@ -1839,6 +1837,40 @@ function enforceCacheControlLimit(params: MessageCreateParamsStreaming, maxBreak
 		stripAllCacheControl(toolBlocks, excessCounter);
 	}
 }
+
+function orderAnthropicRequestParams(params: AnthropicSamplingParams): MessageCreateParamsStreaming {
+	const {
+		model,
+		messages,
+		system,
+		tools,
+		tool_choice,
+		metadata,
+		max_tokens,
+		thinking,
+		temperature,
+		top_p,
+		top_k,
+		output_config,
+		stream,
+		...rest
+	} = params;
+	const ordered: Partial<AnthropicSamplingParams> = { model, messages };
+	if (system !== undefined) ordered.system = system;
+	if (tools !== undefined) ordered.tools = tools;
+	if (tool_choice !== undefined) ordered.tool_choice = tool_choice;
+	if (metadata !== undefined) ordered.metadata = metadata;
+	ordered.max_tokens = max_tokens;
+	if (thinking !== undefined) ordered.thinking = thinking;
+	if (temperature !== undefined) ordered.temperature = temperature;
+	if (top_p !== undefined) ordered.top_p = top_p;
+	if (top_k !== undefined) ordered.top_k = top_k;
+	if (output_config !== undefined) ordered.output_config = output_config;
+	Object.assign(ordered, rest);
+	if (stream !== undefined) ordered.stream = stream;
+	return ordered as AnthropicSamplingParams;
+}
+
 function buildParams(
 	model: Model<"anthropic-messages">,
 	baseUrl: string,
@@ -1848,7 +1880,7 @@ function buildParams(
 	disableStrictTools = false,
 ): MessageCreateParamsStreaming {
 	const { cacheControl } = getCacheControl(model, baseUrl, options?.cacheRetention);
-	const params: AnthropicSamplingParams = {
+	let params: AnthropicSamplingParams = {
 		model: model.id,
 		messages: convertAnthropicMessages(context.messages, model, isOAuthToken),
 		max_tokens: options?.maxTokens || (model.maxTokens / 3) | 0,
@@ -1958,6 +1990,7 @@ function buildParams(
 	applyPromptCaching(params, cacheControl);
 	enforceCacheControlLimit(params, 4);
 	normalizeCacheControlTtlOrdering(params);
+	params = orderAnthropicRequestParams(params) as AnthropicSamplingParams;
 	finalizeClaudeBillingHeaderCch(params);
 
 	return params;
