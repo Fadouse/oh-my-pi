@@ -1,17 +1,20 @@
 /**
  * Anthropic OAuth flow (Claude Pro/Max)
  */
+
+import { type AnthropicOAuthAccountInfo, storeAnthropicOAuthMetadata } from "./anthropic-metadata";
 import { OAuthCallbackFlow } from "./callback-server";
 import { generatePKCE } from "./pkce";
 import type { OAuthController, OAuthCredentials } from "./types";
 
 const decode = (s: string) => atob(s);
 const CLIENT_ID = decode("OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl");
-const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
-const TOKEN_URL = "https://api.anthropic.com/v1/oauth/token";
+const AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize";
+const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 const CALLBACK_PORT = 54545;
 const CALLBACK_PATH = "/callback";
-const SCOPES = "org:create_api_key user:profile user:inference";
+const SCOPES =
+	"org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
 
 function formatErrorDetails(error: unknown): string {
 	if (error instanceof Error) {
@@ -48,20 +51,75 @@ async function postJson(url: string, body: Record<string, string | number>): Pro
 	return responseBody;
 }
 
-function parseOAuthTokenResponse(
-	responseBody: string,
-	operation: string,
-): {
+type AnthropicOAuthTokenResponse = {
 	access_token: string;
 	refresh_token: string;
 	expires_in: number;
-} {
+	account?: {
+		uuid?: string;
+		email_address?: string;
+	};
+	organization?: {
+		uuid?: string;
+	};
+};
+
+type AnthropicOAuthProfileResponse = {
+	account?: {
+		uuid?: string;
+		email?: string;
+	};
+	organization?: {
+		uuid?: string;
+	};
+};
+
+function toOAuthAccountInfo(data: AnthropicOAuthTokenResponse): AnthropicOAuthAccountInfo | undefined {
+	const accountUuid = data.account?.uuid;
+	if (!accountUuid) return undefined;
+	return {
+		accountUuid,
+		...(data.account?.email_address ? { emailAddress: data.account.email_address } : {}),
+		...(data.organization?.uuid ? { organizationUuid: data.organization.uuid } : {}),
+	};
+}
+
+function toOAuthProfileAccountInfo(
+	data: AnthropicOAuthProfileResponse | undefined,
+): AnthropicOAuthAccountInfo | undefined {
+	const accountUuid = data?.account?.uuid;
+	if (!accountUuid) return undefined;
+	return {
+		accountUuid,
+		...(data.account?.email ? { emailAddress: data.account.email } : {}),
+		...(data.organization?.uuid ? { organizationUuid: data.organization.uuid } : {}),
+	};
+}
+
+async function fetchOAuthProfile(accessToken: string): Promise<AnthropicOAuthProfileResponse | undefined> {
 	try {
-		return JSON.parse(responseBody) as {
-			access_token: string;
-			refresh_token: string;
-			expires_in: number;
-		};
+		const response = await fetch("https://api.anthropic.com/api/oauth/profile", {
+			headers: {
+				Authorization: `Bearer ${accessToken}`,
+				"Content-Type": "application/json",
+			},
+			signal: AbortSignal.timeout(10_000),
+		});
+		if (!response.ok) return undefined;
+		return (await response.json()) as AnthropicOAuthProfileResponse;
+	} catch {
+		return undefined;
+	}
+}
+
+async function storeOAuthMetadataFromTokenResponse(data: AnthropicOAuthTokenResponse): Promise<void> {
+	const profileAccount = await fetchOAuthProfile(data.access_token).then(toOAuthProfileAccountInfo);
+	storeAnthropicOAuthMetadata(profileAccount ?? toOAuthAccountInfo(data));
+}
+
+function parseOAuthTokenResponse(responseBody: string, operation: string): AnthropicOAuthTokenResponse {
+	try {
+		return JSON.parse(responseBody) as AnthropicOAuthTokenResponse;
 	} catch (error) {
 		throw new Error(
 			`Anthropic ${operation} returned invalid JSON. url=${TOKEN_URL}; body=${responseBody}; details=${formatErrorDetails(error)}`,
@@ -130,6 +188,7 @@ export class AnthropicOAuthFlow extends OAuthCallbackFlow {
 		}
 
 		const tokenData = parseOAuthTokenResponse(responseBody, "token exchange");
+		await storeOAuthMetadataFromTokenResponse(tokenData);
 
 		return {
 			refresh: tokenData.refresh_token,
@@ -163,6 +222,7 @@ export async function refreshAnthropicToken(refreshToken: string): Promise<OAuth
 	}
 
 	const data = parseOAuthTokenResponse(responseBody, "token refresh");
+	await storeOAuthMetadataFromTokenResponse(data);
 
 	return {
 		refresh: data.refresh_token || refreshToken,

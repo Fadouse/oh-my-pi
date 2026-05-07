@@ -46,6 +46,7 @@ import { isFoundryEnabled } from "../utils/foundry";
 import { finalizeErrorMessage, type RawHttpRequestDump, rewriteCopilotError } from "../utils/http-inspector";
 import { createWatchdog, getStreamFirstEventTimeoutMs } from "../utils/idle-iterator";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse";
+import { buildAnthropicMetadataUserId, isAnthropicMetadataUserId } from "../utils/oauth/anthropic-metadata";
 import { parseGitHubCopilotApiKey } from "../utils/oauth/github-copilot";
 import { notifyProviderResponse } from "../utils/provider-response";
 import { extractHttpStatusFromError, isCopilotRetryableError, isUnexpectedSocketCloseMessage } from "../utils/retry";
@@ -65,6 +66,8 @@ export type AnthropicHeaderOptions = {
 	stream?: boolean;
 	modelHeaders?: Record<string, string>;
 	isCloudflareAiGateway?: boolean;
+	modelId?: string;
+	sessionId?: string;
 };
 
 export function normalizeAnthropicBaseUrl(baseUrl?: string): string | undefined {
@@ -93,9 +96,14 @@ export function buildBetaHeader(baseBetas: string[], extraBetas: string[]): stri
 const claudeCodeBetaDefaults = [
 	"claude-code-20250219",
 	"oauth-2025-04-20",
-	"context-management-2025-06-27",
+	"interleaved-thinking-2025-05-14",
+	"redact-thinking-2026-02-12",
 	"prompt-caching-scope-2026-01-05",
+	"context-management-2025-06-27",
+	"advisor-tool-2026-03-01",
 ];
+const claudeCodeLongContextBeta = "context-1m-2025-08-07";
+const claudeCodeEffortBeta = "effort-2025-11-24";
 const fineGrainedToolStreamingBeta = "fine-grained-tool-streaming-2025-05-14";
 const interleavedThinkingBeta = "interleaved-thinking-2025-05-14";
 
@@ -132,11 +140,44 @@ const sharedHeaders = {
 	"X-App": "cli",
 };
 
+const claudeCodeRequestSessionId = nodeCrypto.randomUUID();
+
+function supportsClaudeCodeLongContextBeta(modelId: string | undefined): boolean {
+	if (!modelId) return false;
+	const lower = modelId.toLowerCase();
+	if (!lower.includes("opus") && !lower.includes("sonnet")) return false;
+	const versionMatch = /(opus|sonnet)-(\d+)-(\d+)/.exec(lower);
+	if (!versionMatch) return false;
+	const major = Number(versionMatch[2]);
+	const minor = Number(versionMatch[3]);
+	const effectiveMinor = minor > 99 ? 0 : minor;
+	return major > 4 || (major === 4 && effectiveMinor >= 6);
+}
+
+function getClaudeCodeBetas(modelId: string | undefined, extraBetas: string[]): string[] {
+	const defaults = claudeCodeBetaDefaults.filter(beta => {
+		if (modelId?.toLowerCase().includes("haiku") && beta === interleavedThinkingBeta) return false;
+		return true;
+	});
+	const modelSpecificBetas: string[] = [];
+	const lowerModelId = modelId?.toLowerCase() ?? "";
+	if (lowerModelId.includes("4-6") || lowerModelId.includes("4-7")) {
+		modelSpecificBetas.push(claudeCodeEffortBeta);
+	}
+	if (
+		($env.ANTHROPIC_ENABLE_1M_CONTEXT ?? "").toLowerCase() === "true" &&
+		supportsClaudeCodeLongContextBeta(modelId)
+	) {
+		modelSpecificBetas.push(claudeCodeLongContextBeta);
+	}
+	return [...defaults, ...modelSpecificBetas, ...extraBetas];
+}
+
 export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<string, string> {
 	const oauthToken = options.isOAuth ?? isAnthropicOAuthToken(options.apiKey);
 	const extraBetas = options.extraBetas ?? [];
 	const stream = options.stream ?? false;
-	const betaHeader = buildBetaHeader(claudeCodeBetaDefaults, extraBetas);
+	const betaHeader = buildBetaHeader(getClaudeCodeBetas(options.modelId, extraBetas), []);
 	const acceptHeader = stream ? "text/event-stream" : "application/json";
 	const modelHeaders = Object.fromEntries(
 		Object.entries(options.modelHeaders ?? {}).filter(([key]) => !enforcedHeaderKeys.has(key.toLowerCase())),
@@ -165,6 +206,8 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 			...sharedHeaders,
 			"Anthropic-Beta": betaHeader,
 			"User-Agent": userAgent,
+			"x-client-request-id": nodeCrypto.randomUUID(),
+			"X-Claude-Code-Session-Id": options.sessionId ?? claudeCodeRequestSessionId,
 		};
 	} else if (!isAnthropicApiBaseUrl(options.baseUrl)) {
 		return {
@@ -185,12 +228,25 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 	}
 }
 
-type AnthropicCacheControl = { type: "ephemeral"; ttl?: "1h" | "5m" };
+type AnthropicCacheScope = "global" | "org";
+type AnthropicCacheControl = {
+	type: "ephemeral";
+	ttl?: "1h" | "5m";
+	scope?: AnthropicCacheScope;
+};
 
 type AnthropicSamplingParams = MessageCreateParamsStreaming & {
 	top_p?: number;
 	top_k?: number;
 };
+
+function getPromptCachingEnabled(modelId: string): boolean {
+	if (($env.DISABLE_PROMPT_CACHING ?? "").toLowerCase() === "true") return false;
+	if (($env.DISABLE_PROMPT_CACHING_HAIKU ?? "").toLowerCase() === "true" && modelId.includes("haiku")) return false;
+	if (($env.DISABLE_PROMPT_CACHING_SONNET ?? "").toLowerCase() === "true" && modelId.includes("sonnet")) return false;
+	if (($env.DISABLE_PROMPT_CACHING_OPUS ?? "").toLowerCase() === "true" && modelId.includes("opus")) return false;
+	return true;
+}
 
 /**
  * Adaptive thinking `display` is supported starting with Claude Opus 4.7.
@@ -261,7 +317,7 @@ function getCacheControl(
 	cacheRetention?: CacheRetention,
 ): { retention: CacheRetention; cacheControl?: AnthropicCacheControl } {
 	const retention = resolveCacheRetention(cacheRetention);
-	if (retention === "none") {
+	if (retention === "none" || !getPromptCachingEnabled(model.id)) {
 		return { retention };
 	}
 	const ttl =
@@ -275,9 +331,9 @@ function getCacheControl(
 }
 
 // Stealth mode: Mimic Claude Code headers and tool prefixing.
-export const claudeCodeVersion = "2.1.63";
-export const claudeToolPrefix: string = "proxy_";
-export const claudeCodeSystemInstruction = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
+export const claudeCodeVersion = "2.1.126";
+export const claudeToolPrefix: string = "mcp_";
+export const claudeCodeSystemInstruction = "You are Claude Code, Anthropic's official CLI for Claude.";
 
 export function mapStainlessOs(platform: string): "MacOS" | "Windows" | "Linux" | "FreeBSD" | `Other::${string}` {
 	switch (platform.toLowerCase()) {
@@ -315,7 +371,7 @@ export function mapStainlessArch(arch: string): "x64" | "arm64" | "x86" | `other
 export const claudeCodeHeaders = {
 	"X-Stainless-Retry-Count": "0",
 	"X-Stainless-Runtime-Version": "v24.3.0",
-	"X-Stainless-Package-Version": "0.74.0",
+	"X-Stainless-Package-Version": "0.81.0",
 	"X-Stainless-Runtime": "node",
 	"X-Stainless-Lang": "js",
 	"X-Stainless-Arch": mapStainlessArch(process.arch),
@@ -337,46 +393,173 @@ const enforcedHeaderKeys = new Set(
 		"X-App",
 		"Authorization",
 		"X-Api-Key",
+		"x-client-request-id",
+		"X-Claude-Code-Session-Id",
 		"cf-aig-authorization",
 	].map(key => key.toLowerCase()),
 );
 
 const CLAUDE_BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
+const CLAUDE_BILLING_SALT = "59cf53e54c78";
+const CLAUDE_BILLING_CCH_SLOT = "cch=00000";
+const CLAUDE_CCH_SEED = 0x6e52736ac806831en;
+const XXH64_MASK = 0xffffffffffffffffn;
+const XXH64_PRIME_1 = 0x9e3779b185ebca87n;
+const XXH64_PRIME_2 = 0xc2b2ae3d27d4eb4fn;
+const XXH64_PRIME_3 = 0x165667b19e3779f9n;
+const XXH64_PRIME_4 = 0x85ebca77c2b2ae63n;
+const XXH64_PRIME_5 = 0x27d4eb2f165667c5n;
 
-function createClaudeBillingHeader(payload: unknown): string {
-	const payloadJson = JSON.stringify(payload) ?? "";
-	const cch = nodeCrypto.createHash("sha256").update(payloadJson).digest("hex").slice(0, 5);
-	const randomBytes = new Uint8Array(2);
-	crypto.getRandomValues(randomBytes);
-	const buildHash = Array.from(randomBytes, byte => byte.toString(16).padStart(2, "0"))
-		.join("")
-		.slice(0, 3);
-	return `${CLAUDE_BILLING_HEADER_PREFIX} cc_version=${claudeCodeVersion}.${buildHash}; cc_entrypoint=cli; cch=${cch};`;
+function xxh64RotateLeft(value: bigint, bits: bigint): bigint {
+	const shift = Number(bits);
+	return ((value << bits) & XXH64_MASK) | ((value & XXH64_MASK) >> BigInt(64 - shift));
 }
 
-const CLAUDE_CLOAKING_USER_ID_REGEX =
-	/^user_[0-9a-fA-F]{64}_account_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+function xxh64Round(accumulator: bigint, input: bigint): bigint {
+	let next = (accumulator + ((input * XXH64_PRIME_2) & XXH64_MASK)) & XXH64_MASK;
+	next = xxh64RotateLeft(next, 31n);
+	return (next * XXH64_PRIME_1) & XXH64_MASK;
+}
 
-export function isClaudeCloakingUserId(userId: string): boolean {
-	return CLAUDE_CLOAKING_USER_ID_REGEX.test(userId);
+function xxh64MergeRound(accumulator: bigint, value: bigint): bigint {
+	let next = accumulator ^ xxh64Round(0n, value);
+	next = (next * XXH64_PRIME_1 + XXH64_PRIME_4) & XXH64_MASK;
+	return next;
+}
+
+function xxh64Avalanche(value: bigint): bigint {
+	let next = value;
+	next ^= next >> 33n;
+	next = (next * XXH64_PRIME_2) & XXH64_MASK;
+	next ^= next >> 29n;
+	next = (next * XXH64_PRIME_3) & XXH64_MASK;
+	next ^= next >> 32n;
+	return next & XXH64_MASK;
+}
+
+function readUint64LE(bytes: Uint8Array, offset: number): bigint {
+	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	return view.getBigUint64(offset, true);
+}
+
+function readUint32LE(bytes: Uint8Array, offset: number): bigint {
+	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	return BigInt(view.getUint32(offset, true));
+}
+
+export function computeClaudeCch(bodyText: string): string {
+	const bodyBytes = new TextEncoder().encode(bodyText);
+	const length = bodyBytes.length;
+	let offset = 0;
+	let hash: bigint;
+
+	if (length >= 32) {
+		let value1 = (CLAUDE_CCH_SEED + XXH64_PRIME_1 + XXH64_PRIME_2) & XXH64_MASK;
+		let value2 = (CLAUDE_CCH_SEED + XXH64_PRIME_2) & XXH64_MASK;
+		let value3 = CLAUDE_CCH_SEED & XXH64_MASK;
+		let value4 = (CLAUDE_CCH_SEED - XXH64_PRIME_1) & XXH64_MASK;
+		while (offset + 32 <= length) {
+			value1 = xxh64Round(value1, readUint64LE(bodyBytes, offset));
+			offset += 8;
+			value2 = xxh64Round(value2, readUint64LE(bodyBytes, offset));
+			offset += 8;
+			value3 = xxh64Round(value3, readUint64LE(bodyBytes, offset));
+			offset += 8;
+			value4 = xxh64Round(value4, readUint64LE(bodyBytes, offset));
+			offset += 8;
+		}
+		hash =
+			(xxh64RotateLeft(value1, 1n) +
+				xxh64RotateLeft(value2, 7n) +
+				xxh64RotateLeft(value3, 12n) +
+				xxh64RotateLeft(value4, 18n)) &
+			XXH64_MASK;
+		hash = xxh64MergeRound(hash, value1);
+		hash = xxh64MergeRound(hash, value2);
+		hash = xxh64MergeRound(hash, value3);
+		hash = xxh64MergeRound(hash, value4);
+	} else {
+		hash = (CLAUDE_CCH_SEED + XXH64_PRIME_5) & XXH64_MASK;
+	}
+
+	hash = (hash + BigInt(length)) & XXH64_MASK;
+	while (offset + 8 <= length) {
+		const lane = xxh64Round(0n, readUint64LE(bodyBytes, offset));
+		hash ^= lane;
+		hash = (xxh64RotateLeft(hash, 27n) * XXH64_PRIME_1 + XXH64_PRIME_4) & XXH64_MASK;
+		offset += 8;
+	}
+	if (offset + 4 <= length) {
+		hash ^= (readUint32LE(bodyBytes, offset) * XXH64_PRIME_1) & XXH64_MASK;
+		hash = (xxh64RotateLeft(hash, 23n) * XXH64_PRIME_2 + XXH64_PRIME_3) & XXH64_MASK;
+		offset += 4;
+	}
+	while (offset < length) {
+		hash ^= (BigInt(bodyBytes[offset] ?? 0) * XXH64_PRIME_5) & XXH64_MASK;
+		hash = (xxh64RotateLeft(hash, 11n) * XXH64_PRIME_1) & XXH64_MASK;
+		offset += 1;
+	}
+
+	return (xxh64Avalanche(hash) & 0xfffffn).toString(16).padStart(5, "0");
+}
+
+function extractFirstUserMessageText(messages: MessageCreateParamsStreaming["messages"] | undefined): string {
+	const userMessage = messages?.find(message => message.role === "user");
+	const content = userMessage?.content;
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		const textBlock = content.find(block => block.type === "text") as { type?: string; text?: unknown } | undefined;
+		if (textBlock?.type === "text" && typeof textBlock.text === "string") return textBlock.text;
+	}
+	return "";
+}
+
+export function computeClaudeVersionSuffix(messageText: string, version: string = claudeCodeVersion): string {
+	const sampled = [4, 7, 20].map(index => (index < messageText.length ? messageText[index] : "0")).join("");
+	return nodeCrypto
+		.createHash("sha256")
+		.update(`${CLAUDE_BILLING_SALT}${sampled}${version}`)
+		.digest("hex")
+		.slice(0, 3);
+}
+
+function createClaudeBillingHeader(payload: unknown): string {
+	const messages =
+		isRecord(payload) && Array.isArray(payload.messages)
+			? (payload.messages as MessageCreateParamsStreaming["messages"])
+			: undefined;
+	const versionSuffix = computeClaudeVersionSuffix(extractFirstUserMessageText(messages));
+	return `${CLAUDE_BILLING_HEADER_PREFIX} cc_version=${claudeCodeVersion}.${versionSuffix}; cc_entrypoint=cli; ${CLAUDE_BILLING_CCH_SLOT};`;
+}
+
+function finalizeClaudeBillingHeaderCch(params: MessageCreateParamsStreaming): void {
+	if (!Array.isArray(params.system)) return;
+	const systemBlocks = params.system as AnthropicSystemBlock[];
+	const billingBlock = systemBlocks.find(block => block.text.includes(CLAUDE_BILLING_CCH_SLOT));
+	if (!billingBlock) return;
+	const cch = computeClaudeCch(JSON.stringify(params));
+	billingBlock.text = billingBlock.text.replace(CLAUDE_BILLING_CCH_SLOT, `cch=${cch}`);
+}
+
+export function isClaudeCodeMetadataUserId(userId: string): boolean {
+	return isAnthropicMetadataUserId(userId);
 }
 
 export function generateClaudeCloakingUserId(): string {
-	const userHash = nodeCrypto.randomBytes(32).toString("hex");
-	const accountId = nodeCrypto.randomUUID().toLowerCase();
-	const sessionId = nodeCrypto.randomUUID().toLowerCase();
-	return `user_${userHash}_account_${accountId}_session_${sessionId}`;
+	return JSON.stringify(buildAnthropicMetadataUserId(undefined, claudeCodeRequestSessionId));
 }
 
-function resolveAnthropicMetadataUserId(userId: unknown, isOAuthToken: boolean): string | undefined {
-	if (typeof userId === "string") {
-		if (!isOAuthToken || isClaudeCloakingUserId(userId)) {
-			return userId;
-		}
-	}
+export function isClaudeCloakingUserId(userId: string): boolean {
+	return isClaudeCodeMetadataUserId(userId);
+}
 
-	if (!isOAuthToken) return undefined;
-	return generateClaudeCloakingUserId();
+function resolveAnthropicMetadataUserId(
+	userId: unknown,
+	isOAuthToken: boolean,
+	sessionId: string | undefined,
+): string | undefined {
+	if (!isOAuthToken) return typeof userId === "string" ? userId : undefined;
+	return JSON.stringify(buildAnthropicMetadataUserId(userId, sessionId ?? claudeCodeRequestSessionId));
 }
 const ANTHROPIC_BUILTIN_TOOL_NAMES = new Set(["web_search", "code_execution", "text_editor", "computer"]);
 export const applyClaudeToolPrefix = (name: string, prefixOverride: string = claudeToolPrefix) => {
@@ -384,14 +567,15 @@ export const applyClaudeToolPrefix = (name: string, prefixOverride: string = cla
 	if (ANTHROPIC_BUILTIN_TOOL_NAMES.has(name.toLowerCase())) return name;
 	const prefix = prefixOverride.toLowerCase();
 	if (name.toLowerCase().startsWith(prefix)) return name;
-	return `${prefixOverride}${name}`;
+	return `${prefixOverride}${name.charAt(0).toUpperCase()}${name.slice(1)}`;
 };
 
 export const stripClaudeToolPrefix = (name: string, prefixOverride: string = claudeToolPrefix) => {
 	if (!prefixOverride) return name;
 	const prefix = prefixOverride.toLowerCase();
 	if (!name.toLowerCase().startsWith(prefix)) return name;
-	return name.slice(prefixOverride.length);
+	const stripped = name.slice(prefixOverride.length);
+	return `${stripped.charAt(0).toLowerCase()}${stripped.slice(1)}`;
 };
 
 /**
@@ -508,6 +692,7 @@ export type AnthropicClientOptionsArgs = {
 	dynamicHeaders?: Record<string, string>;
 	isOAuth?: boolean;
 	hasTools?: boolean;
+	sessionId?: string;
 };
 
 export type AnthropicClientOptionsResult = {
@@ -924,6 +1109,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 					dynamicHeaders: copilotDynamicHeaders?.headers,
 					isOAuth: options?.isOAuth,
 					hasTools: !!context.tools?.length,
+					sessionId: options?.sessionId,
 				});
 				client = created.client;
 				isOAuthToken = created.isOAuthToken;
@@ -1312,12 +1498,25 @@ export function buildAnthropicSystemBlocks(
 		blocks.push({ type: "text", text: systemPrompt });
 	}
 
-	// Attach cache_control to the LAST emitted block only. Anthropic breakpoints are cumulative
-	// prefix cuts, so a single trailing breakpoint covers every preceding block; spreading
-	// cache_control across N blocks wastes slots against the 4-breakpoint cap.
-	const lastIndex = blocks.length - 1;
-	if (cacheControl && lastIndex >= 0) {
-		blocks[lastIndex] = { ...blocks[lastIndex], cache_control: cacheControl };
+	if (cacheControl) {
+		if (includeClaudeCodeInstruction && blocks.length > 1) {
+			blocks[1] = {
+				...blocks[1],
+				cache_control: cacheControl,
+			};
+			const lastNonBillingIndex = blocks.length - 1;
+			if (lastNonBillingIndex > 1) {
+				blocks[lastNonBillingIndex] = {
+					...blocks[lastNonBillingIndex],
+					cache_control: cacheControl,
+				};
+			}
+		} else {
+			const lastIndex = blocks.length - 1;
+			if (lastIndex >= 0) {
+				blocks[lastIndex] = { ...blocks[lastIndex], cache_control: cacheControl };
+			}
+		}
 	}
 
 	return blocks.length > 0 ? blocks : undefined;
@@ -1395,6 +1594,8 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		stream,
 		modelHeaders: mergeHeaders(model.headers, foundryCustomHeaders, headers, dynamicHeaders),
 		isCloudflareAiGateway: model.provider === "cloudflare-ai-gateway",
+		modelId: model.id,
+		sessionId: args.sessionId,
 	});
 
 	if (model.provider === "cloudflare-ai-gateway") {
@@ -1459,104 +1660,56 @@ type CacheControlBlock = {
 	cache_control?: AnthropicCacheControl | null;
 };
 
-function applyCacheControlToLastBlock<T extends CacheControlBlock>(
-	blocks: T[],
-	cacheControl: AnthropicCacheControl,
-): void {
-	if (blocks.length === 0) return;
-	const lastIndex = blocks.length - 1;
-	blocks[lastIndex] = { ...blocks[lastIndex], cache_control: cacheControl };
+type CacheReferenceBlock = {
+	type?: string;
+	tool_use_id?: string;
+	cache_reference?: string;
+};
+
+function applyCacheControlToMessage(message: MessageParam, cacheControl: AnthropicCacheControl): void {
+	if (typeof message.content === "string") {
+		message.content = [{ type: "text", text: message.content, cache_control: cacheControl }];
+		return;
+	}
+	if (!Array.isArray(message.content) || message.content.length === 0) return;
+	const lastIndex = message.content.length - 1;
+	const block = message.content[lastIndex];
+	if (message.role === "assistant" && (block.type === "thinking" || block.type === "redacted_thinking")) {
+		return;
+	}
+	message.content[lastIndex] = { ...block, cache_control: cacheControl } as ContentBlockParam & CacheControlBlock;
 }
 
-function applyCacheControlToLastTextBlock(
-	blocks: Array<ContentBlockParam & CacheControlBlock>,
-	cacheControl: AnthropicCacheControl,
-): void {
-	if (blocks.length === 0) return;
-	for (let i = blocks.length - 1; i >= 0; i--) {
-		if (blocks[i].type === "text") {
-			blocks[i] = { ...blocks[i], cache_control: cacheControl };
-			return;
+function addCacheReferencesBeforeLastMarker(params: MessageCreateParamsStreaming): void {
+	let lastCacheControlMessageIndex = -1;
+	for (let index = 0; index < params.messages.length; index++) {
+		const message = params.messages[index];
+		if (!Array.isArray(message.content)) continue;
+		if (
+			(message.content as Array<ContentBlockParam & CacheControlBlock>).some(block => block.cache_control != null)
+		) {
+			lastCacheControlMessageIndex = index;
 		}
 	}
-	applyCacheControlToLastBlock(blocks, cacheControl);
+	if (lastCacheControlMessageIndex <= 0) return;
+	for (let index = 0; index < lastCacheControlMessageIndex; index++) {
+		const message = params.messages[index];
+		if (message.role !== "user" || !Array.isArray(message.content)) continue;
+		for (let blockIndex = 0; blockIndex < message.content.length; blockIndex++) {
+			const block = message.content[blockIndex] as ContentBlockParam & CacheReferenceBlock;
+			if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
+			message.content[blockIndex] = {
+				...block,
+				cache_reference: block.tool_use_id,
+			} as ContentBlockParam;
+		}
+	}
 }
 
 function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?: AnthropicCacheControl): void {
-	if (!cacheControl) return;
-
-	// Skip if cache_control breakpoints were already placed externally on messages.
-	for (const message of params.messages) {
-		if (Array.isArray(message.content)) {
-			if ((message.content as Array<ContentBlockParam & CacheControlBlock>).some(b => b.cache_control != null))
-				return;
-		}
-	}
-
-	const MAX_CACHE_BREAKPOINTS = 4;
-	let cacheBreakpointsUsed = 0;
-
-	if (params.tools && params.tools.length > 0) {
-		applyCacheControlToLastBlock(params.tools as Array<CacheControlBlock>, cacheControl);
-		cacheBreakpointsUsed++;
-	}
-
-	if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) return;
-
-	if (params.system && Array.isArray(params.system) && params.system.length > 0) {
-		applyCacheControlToLastBlock(params.system, cacheControl);
-		cacheBreakpointsUsed++;
-	}
-
-	if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) return;
-
-	const userIndexes = params.messages
-		.map((message, index) => (message.role === "user" ? index : -1))
-		.filter(index => index >= 0);
-
-	if (userIndexes.length >= 2) {
-		const penultimateUserIndex = userIndexes[userIndexes.length - 2];
-		const penultimateUser = params.messages[penultimateUserIndex];
-		if (penultimateUser) {
-			if (typeof penultimateUser.content === "string") {
-				const contentBlock: ContentBlockParam & CacheControlBlock = {
-					type: "text",
-					text: penultimateUser.content,
-					cache_control: cacheControl,
-				};
-				penultimateUser.content = [contentBlock];
-				cacheBreakpointsUsed++;
-			} else if (Array.isArray(penultimateUser.content) && penultimateUser.content.length > 0) {
-				applyCacheControlToLastTextBlock(
-					penultimateUser.content as Array<ContentBlockParam & CacheControlBlock>,
-					cacheControl,
-				);
-				cacheBreakpointsUsed++;
-			}
-		}
-	}
-
-	if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) return;
-
-	if (userIndexes.length >= 1) {
-		const lastUserIndex = userIndexes[userIndexes.length - 1];
-		const lastUser = params.messages[lastUserIndex];
-		if (lastUser) {
-			if (typeof lastUser.content === "string") {
-				const contentBlock: ContentBlockParam & CacheControlBlock = {
-					type: "text",
-					text: lastUser.content,
-					cache_control: cacheControl,
-				};
-				lastUser.content = [contentBlock];
-			} else if (Array.isArray(lastUser.content) && lastUser.content.length > 0) {
-				applyCacheControlToLastTextBlock(
-					lastUser.content as Array<ContentBlockParam & CacheControlBlock>,
-					cacheControl,
-				);
-			}
-		}
-	}
+	if (!cacheControl || params.messages.length === 0) return;
+	applyCacheControlToMessage(params.messages[params.messages.length - 1]!, cacheControl);
+	addCacheReferencesBeforeLastMarker(params);
 }
 
 function normalizeCacheControlBlockTtl(block: CacheControlBlock, seenFiveMinute: { value: boolean }): void {
@@ -1766,7 +1919,7 @@ function buildParams(
 		}
 	}
 
-	const metadataUserId = resolveAnthropicMetadataUserId(options?.metadata?.user_id, isOAuthToken);
+	const metadataUserId = resolveAnthropicMetadataUserId(options?.metadata?.user_id, isOAuthToken, options?.sessionId);
 	if (metadataUserId) {
 		params.metadata = { user_id: metadataUserId };
 	}
@@ -1795,6 +1948,7 @@ function buildParams(
 	const systemBlocks = buildAnthropicSystemBlocks(context.systemPrompt, {
 		includeClaudeCodeInstruction: shouldInjectClaudeCodeInstruction,
 		billingPayload,
+		cacheControl,
 	});
 	if (systemBlocks) {
 		params.system = systemBlocks;
@@ -1804,6 +1958,7 @@ function buildParams(
 	applyPromptCaching(params, cacheControl);
 	enforceCacheControlLimit(params, 4);
 	normalizeCacheControlTtlOrdering(params);
+	finalizeClaudeBillingHeaderCch(params);
 
 	return params;
 }

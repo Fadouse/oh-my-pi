@@ -12,6 +12,8 @@ import {
 	claudeCodeHeaders,
 	claudeCodeSystemInstruction,
 	claudeCodeVersion,
+	computeClaudeCch,
+	computeClaudeVersionSuffix,
 	generateClaudeCloakingUserId,
 	isClaudeCloakingUserId,
 	mapStainlessArch,
@@ -59,6 +61,7 @@ type CaptureAnthropicOptions = {
 	temperature?: number;
 	topP?: number;
 	topK?: number;
+	sessionId?: string;
 };
 
 function captureAnthropicPayload(
@@ -77,6 +80,7 @@ function captureAnthropicPayload(
 		temperature: options?.temperature,
 		topP: options?.topP,
 		topK: options?.topK,
+		sessionId: options?.sessionId,
 		onPayload: payload => resolve(payload),
 	});
 	return promise;
@@ -92,9 +96,21 @@ describe("Anthropic request fingerprint alignment", () => {
 
 		expect(headers["Anthropic-Beta"]).toContain("context-management-2025-06-27");
 		expect(headers["Anthropic-Beta"]).toContain("prompt-caching-scope-2026-01-05");
+		expect(headers["Anthropic-Beta"]).toContain("redact-thinking-2026-02-12");
+		expect(headers["Anthropic-Beta"]).toContain("advisor-tool-2026-03-01");
 		expect(headers["Anthropic-Beta"]).not.toContain("fine-grained-tool-streaming-2025-05-14");
 		expect(headers["User-Agent"]).toBe(`claude-cli/${claudeCodeVersion} (external, cli)`);
-		expect(claudeCodeHeaders["X-Stainless-Package-Version"]).toBe("0.74.0");
+		expect(headers["x-client-request-id"]).toMatch(/^[0-9a-f-]{36}$/);
+		expect(headers["X-Claude-Code-Session-Id"]).toMatch(/^[0-9a-f-]{36}$/);
+		expect(claudeCodeHeaders["X-Stainless-Package-Version"]).toBe("0.81.0");
+
+		const sessionHeaders = buildAnthropicHeaders({
+			apiKey: "sk-ant-oat-test",
+			isOAuth: true,
+			stream: true,
+			sessionId: "session-from-options",
+		});
+		expect(sessionHeaders["X-Claude-Code-Session-Id"]).toBe("session-from-options");
 		expect("X-Stainless-Helper-Method" in claudeCodeHeaders).toBe(false);
 	});
 
@@ -124,6 +140,14 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(headers["X-Stainless-Arch"]).toBe(mapStainlessArch(process.arch));
 	});
 
+	it("matches recovered Claude Code billing signature algorithms", () => {
+		const bodyText =
+			'{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"hi"}],"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.88.e09; cc_entrypoint=cli; cch=00000;"}]}';
+
+		expect(computeClaudeVersionSuffix("hello from claude", "2.1.88")).toBe("808");
+		expect(computeClaudeCch(bodyText)).toBe("2a528");
+	});
+
 	it("injects billing header and Claude Agent SDK identity block", () => {
 		const blocks = buildAnthropicSystemBlocks(["Stay concise."], {
 			includeClaudeCodeInstruction: true,
@@ -132,7 +156,7 @@ describe("Anthropic request fingerprint alignment", () => {
 
 		expect(blocks).toBeDefined();
 		expect(blocks?.[0]?.text.startsWith(`x-anthropic-billing-header: cc_version=${claudeCodeVersion}.`)).toBe(true);
-		expect(blocks?.[0]?.text).toMatch(/cc_entrypoint=cli; cch=[0-9a-f]{5};$/);
+		expect(blocks?.[0]?.text).toMatch(/cc_entrypoint=cli; cch=00000;$/);
 		expect(blocks?.[1]).toEqual({
 			type: "text",
 			text: claudeCodeSystemInstruction,
@@ -147,7 +171,27 @@ describe("Anthropic request fingerprint alignment", () => {
 		});
 	});
 
-	it("attaches cache_control only to the last emitted system block when cacheControl is set", () => {
+	it("fills billing cch from the finalized serialized OAuth request body", async () => {
+		const payload = (await captureAnthropicPayload(ANTHROPIC_MODEL, {
+			systemPrompt: ["Stay concise."],
+			messages: [{ role: "user", content: "Hi there from user", timestamp: Date.now() }],
+		})) as { system?: Array<{ type: string; text?: string }> };
+		const billingText = payload.system?.[0]?.text ?? "";
+		const zeroedPayload = {
+			...payload,
+			system: payload.system?.map((block, index) =>
+				index === 0 && block.text
+					? { ...block, text: block.text.replace(/cch=[0-9a-f]{5};$/, "cch=00000;") }
+					: block,
+			),
+		};
+
+		expect(billingText).toMatch(/cc_version=2\.1\.126\.[0-9a-f]{3}; cc_entrypoint=cli; cch=[0-9a-f]{5};$/);
+		expect(billingText).not.toContain("cch=00000");
+		expect(billingText).toContain(`cch=${computeClaudeCch(JSON.stringify(zeroedPayload))}`);
+	});
+
+	it("applies official-style system cache markers without caching the billing header", () => {
 		const blocks = buildAnthropicSystemBlocks(["Stay concise."], {
 			includeClaudeCodeInstruction: true,
 			extraInstructions: ["Use citations when possible"],
@@ -155,7 +199,12 @@ describe("Anthropic request fingerprint alignment", () => {
 		});
 
 		expect(blocks).toBeDefined();
-		// Earlier blocks must NOT carry cache_control; a single trailing breakpoint covers them all.
+		expect(blocks?.[0]?.text?.startsWith(`x-anthropic-billing-header: cc_version=${claudeCodeVersion}.`)).toBe(true);
+		expect(blocks?.[1]).toEqual({
+			type: "text",
+			text: claudeCodeSystemInstruction,
+			cache_control: { type: "ephemeral" },
+		});
 		expect(blocks?.[2]).toEqual({
 			type: "text",
 			text: "Use citations when possible",
@@ -181,6 +230,82 @@ describe("Anthropic request fingerprint alignment", () => {
 			{ type: "text", text: "stable system" },
 			{ type: "text", text: "stable durable context", cache_control: { type: "ephemeral" } },
 		]);
+	});
+
+	it("uses a single last-message cache marker and adds cache_reference to earlier tool results", async () => {
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["Stay concise."],
+				messages: [
+					{ role: "user", content: "Open the file", timestamp: Date.now() },
+					{
+						role: "assistant",
+						content: [{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "a.ts" } }],
+						api: "anthropic-messages",
+						provider: "anthropic",
+						model: ANTHROPIC_MODEL.id,
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "toolUse",
+						timestamp: Date.now(),
+					},
+					{
+						role: "toolResult",
+						toolCallId: "call_1",
+						toolName: "read",
+						content: [{ type: "text", text: "file contents" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+					{
+						role: "assistant",
+						content: [{ type: "text", text: "Done." }],
+						api: "anthropic-messages",
+						provider: "anthropic",
+						model: ANTHROPIC_MODEL.id,
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "stop",
+						timestamp: Date.now(),
+					},
+				],
+			},
+			{ isOAuth: false },
+		)) as {
+			messages?: Array<{
+				role: string;
+				content: Array<{
+					type: string;
+					cache_control?: unknown;
+					cache_reference?: string;
+					tool_use_id?: string;
+				}>;
+			}>;
+		};
+
+		expect(payload.messages?.at(-1)?.content.at(-1)?.cache_control).toEqual({ type: "ephemeral" });
+		const toolResultBlock = payload.messages?.[2]?.content?.[0];
+		expect(toolResultBlock?.tool_use_id).toBe("call_1");
+		expect(toolResultBlock?.cache_reference).toBe("call_1");
+		expect(
+			payload.messages
+				?.slice(0, -1)
+				.flatMap(message => message.content)
+				.filter(block => block.cache_control != null),
+		).toHaveLength(0);
 	});
 
 	it("uses Bearer auth for non-Anthropic API bases with api-key credentials", () => {
@@ -244,9 +369,12 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(systemBlocks[0]?.text).toBe("Stay concise.");
 	});
 
-	it("accepts uppercase hex in the user hash segment", () => {
-		const userId =
-			"user_ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD_account_12345678-1234-1234-1234-1234567890ab_session_abcdefab-cdef-abcd-efab-cdefabcdef12";
+	it("validates Claude Code JSON metadata user IDs", () => {
+		const userId = JSON.stringify({
+			device_id: "device",
+			account_uuid: "account",
+			session_id: "session",
+		});
 		expect(isClaudeCloakingUserId(userId)).toBe(true);
 	});
 
@@ -265,6 +393,50 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(isClaudeCloakingUserId(userId ?? "")).toBe(true);
 	});
 
+	it("derives OAuth metadata IDs from OMP-managed Anthropic metadata and session", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-claude-config-"));
+		const deviceId = "a".repeat(64);
+		const accountUuid = "12345678-1234-1234-1234-1234567890ab";
+		try {
+			fs.writeFileSync(
+				path.join(dir, "anthropic-oauth.json"),
+				JSON.stringify({
+					userID: deviceId,
+					oauthAccount: { accountUuid },
+				}),
+			);
+			await withEnv(
+				{
+					OMP_ANTHROPIC_METADATA_PATH: path.join(dir, "anthropic-oauth.json"),
+					CLAUDE_CODE_EXTRA_METADATA: JSON.stringify({ workload: "test", session_id: "ignored" }),
+				},
+				async () => {
+					const payload = (await captureAnthropicPayload(
+						ANTHROPIC_MODEL,
+						{
+							systemPrompt: ["Stay concise."],
+							messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+						},
+						{ sessionId: "session-from-options" },
+					)) as { metadata?: { user_id?: string } };
+					const metadata = JSON.parse(payload.metadata?.user_id ?? "{}") as {
+						device_id?: string;
+						account_uuid?: string;
+						session_id?: string;
+						workload?: string;
+					};
+
+					expect(metadata.device_id).toBe(deviceId);
+					expect(metadata.account_uuid).toBe(accountUuid);
+					expect(metadata.session_id).toBe("session-from-options");
+					expect(metadata.workload).toBe("test");
+				},
+			);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("does not inject metadata.user_id for non-OAuth requests without caller metadata", async () => {
 		const payload = (await captureAnthropicPayload(
 			ANTHROPIC_MODEL,
@@ -277,8 +449,8 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.metadata).toBeUndefined();
 	});
 
-	it("preserves valid caller metadata.user_id for OAuth requests", async () => {
-		const userId = generateClaudeCloakingUserId();
+	it("preserves parseable caller metadata.user_id fields for OAuth requests", async () => {
+		const userId = JSON.stringify({ existing: "keep" });
 		const payload = (await captureAnthropicPayload(
 			ANTHROPIC_MODEL,
 			{
@@ -287,8 +459,10 @@ describe("Anthropic request fingerprint alignment", () => {
 			},
 			{ metadata: { user_id: userId } },
 		)) as { metadata?: { user_id?: string } };
+		const parsed = JSON.parse(payload.metadata?.user_id ?? "{}") as { existing?: string };
 
-		expect(payload.metadata?.user_id).toBe(userId);
+		expect(parsed.existing).toBe("keep");
+		expect(isClaudeCloakingUserId(payload.metadata?.user_id ?? "")).toBe(true);
 	});
 
 	it("replaces invalid caller metadata.user_id for OAuth requests", async () => {
@@ -891,19 +1065,19 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("treats tool prefix helpers as no-ops when prefix is empty", () => {
 		expect(applyClaudeToolPrefix("Read", "")).toBe("Read");
-		expect(stripClaudeToolPrefix("proxy_Read", "")).toBe("proxy_Read");
+		expect(stripClaudeToolPrefix("mcp_Read", "")).toBe("mcp_Read");
 	});
 
 	it("does not prefix built-in Anthropic tool names when prefix is configured", () => {
-		expect(applyClaudeToolPrefix("web_search", "proxy_")).toBe("web_search");
-		expect(applyClaudeToolPrefix("CODE_EXECUTION", "proxy_")).toBe("CODE_EXECUTION");
-		expect(applyClaudeToolPrefix("Text_Editor", "proxy_")).toBe("Text_Editor");
-		expect(applyClaudeToolPrefix("computer", "proxy_")).toBe("computer");
+		expect(applyClaudeToolPrefix("web_search", "mcp_")).toBe("web_search");
+		expect(applyClaudeToolPrefix("CODE_EXECUTION", "mcp_")).toBe("CODE_EXECUTION");
+		expect(applyClaudeToolPrefix("Text_Editor", "mcp_")).toBe("Text_Editor");
+		expect(applyClaudeToolPrefix("computer", "mcp_")).toBe("computer");
 	});
 
 	it("prefixes custom tool names when prefix is configured", () => {
-		expect(applyClaudeToolPrefix("Read", "proxy_")).toBe("proxy_Read");
-		expect(applyClaudeToolPrefix("proxy_Read", "proxy_")).toBe("proxy_Read");
-		expect(stripClaudeToolPrefix("proxy_Read", "proxy_")).toBe("Read");
+		expect(applyClaudeToolPrefix("read", "mcp_")).toBe("mcp_Read");
+		expect(applyClaudeToolPrefix("mcp_Read", "mcp_")).toBe("mcp_Read");
+		expect(stripClaudeToolPrefix("mcp_Read", "mcp_")).toBe("read");
 	});
 });

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Aligned Anthropic OAuth request fingerprinting, prompt-caching markers/scopes, and Claude Code headers with `opencode-claude-auth`, including deterministic billing suffixes, final-body CCH signing, official Claude Code identity text, `mcp_` PascalCase tool names, OMP-managed Claude Code-style JSON metadata identity persisted at Anthropic OAuth login/refresh, unified request/session IDs, official Claude Code OAuth endpoints/scopes, updated beta flags, and current Stainless package defaults.
+
 ## [14.7.2] - 2026-05-06
 
 ### Fixed
