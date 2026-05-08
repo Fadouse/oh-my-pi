@@ -75,7 +75,7 @@ describe("InputController checkout expansion", () => {
 		expect(renderCalls).toEqual([false]);
 	});
 
-	it("expands checkout summaries with the dedicated checkout transcript shortcut", () => {
+	it("expands checkout summaries with the dedicated checkout transcript shortcut using a forced redraw", () => {
 		const chatContainer = new Container();
 		const checkout = new BranchSummaryMessageComponent(branchSummary());
 		const calls: boolean[] = [];
@@ -87,6 +87,6 @@ describe("InputController checkout expansion", () => {
 		controller.toggleCheckoutTranscriptExpansion();
 
 		expect(calls).toEqual([true]);
-		expect(renderCalls).toEqual([false]);
+		expect(renderCalls).toEqual([true]);
 	});
 });

@@ -713,7 +713,7 @@ export class InputController {
 			}
 		}
 		this.ctx.chatContainer.invalidate();
-		this.ctx.ui.requestRender();
+		this.ctx.ui.requestRender(true);
 	}
 
 	toggleThinkingBlockVisibility(): void {
