@@ -638,7 +638,46 @@ export function buildSessionContext(
 				),
 			);
 		} else if (entry.type === "branch_summary" && entry.summary) {
-			messages.push(createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp));
+			messages.push(
+				createBranchSummaryMessage(
+					entry.summary,
+					entry.fromId,
+					entry.timestamp,
+					entry.details,
+					getBranchSummaryOriginalMessages(entry.details),
+				),
+			);
+		}
+	};
+
+	const getBranchSummaryOriginalMessages = (details: unknown): AgentMessage[] => {
+		const range = (details as { range?: { entryIds?: unknown } } | undefined)?.range;
+		if (!range || !Array.isArray(range.entryIds)) return [];
+		const originalMessages: AgentMessage[] = [];
+		for (const id of range.entryIds) {
+			if (typeof id !== "string") continue;
+			const originalEntry = byId.get(id);
+			if (originalEntry) appendEntryAsOriginalMessage(originalEntry, originalMessages);
+		}
+		return originalMessages;
+	};
+
+	const appendEntryAsOriginalMessage = (entry: SessionEntry, target: AgentMessage[]): void => {
+		if (entry.type === "message") {
+			target.push(entry.message);
+		} else if (entry.type === "custom_message") {
+			target.push(
+				createCustomMessage(
+					entry.customType,
+					entry.content,
+					entry.display,
+					entry.details,
+					entry.timestamp,
+					entry.attribution,
+				),
+			);
+		} else if (entry.type === "branch_summary" && entry.summary) {
+			target.push(createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp, entry.details));
 		}
 	};
 

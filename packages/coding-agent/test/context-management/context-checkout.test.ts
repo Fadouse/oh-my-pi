@@ -193,6 +193,15 @@ describe("context_checkout", () => {
 		if (lastEntry?.type !== "message") throw new Error("Expected replayed suffix message");
 		expect(lastEntry.message).toMatchObject({ role: "user", content: "later message" });
 		expect(peekPending(session.getSessionId())?.navigateTargetId).toBe(replayedSuffixIds[0]);
+		const context = session.buildSessionContext();
+		const summaryMessage = context.messages.find(message => message.role === "branchSummary");
+		expect(summaryMessage).toMatchObject({
+			role: "branchSummary",
+			originalMessages: [
+				{ role: "user", content: "range start" },
+				{ role: "user", content: "range end" },
+			],
+		});
 	});
 
 	it("restores live todos from checkout summary details", async () => {

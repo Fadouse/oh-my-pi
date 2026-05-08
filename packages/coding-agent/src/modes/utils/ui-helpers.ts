@@ -185,7 +185,7 @@ export class UiHelpers {
 			}
 			case "branchSummary": {
 				this.ctx.chatContainer.addChild(new Spacer(1));
-				const component = new BranchSummaryMessageComponent(message);
+				const component = new BranchSummaryMessageComponent(message, this.ctx);
 				component.setExpanded(this.ctx.toolOutputExpanded);
 				this.ctx.chatContainer.addChild(component);
 				break;

@@ -107,6 +107,8 @@ export interface BranchSummaryMessage {
 	summary: string;
 	fromId: string;
 	timestamp: number;
+	details?: unknown;
+	originalMessages?: AgentMessage[];
 }
 
 export interface CompactionSummaryMessage {
@@ -188,12 +190,20 @@ export function pythonExecutionToText(msg: PythonExecutionMessage): string {
 	return text;
 }
 
-export function createBranchSummaryMessage(summary: string, fromId: string, timestamp: string): BranchSummaryMessage {
+export function createBranchSummaryMessage(
+	summary: string,
+	fromId: string,
+	timestamp: string,
+	details?: unknown,
+	originalMessages?: AgentMessage[],
+): BranchSummaryMessage {
 	return {
 		role: "branchSummary",
 		summary,
 		fromId,
 		timestamp: new Date(timestamp).getTime(),
+		...(details !== undefined ? { details } : {}),
+		...(originalMessages && originalMessages.length > 0 ? { originalMessages } : {}),
 	};
 }
 
