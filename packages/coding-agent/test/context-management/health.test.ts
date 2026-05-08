@@ -78,5 +78,6 @@ describe("computeContextHealth", () => {
 		expect(health.turnsSinceUserMilestone).toBe(3);
 		expect(health.toolResultDensity).toBe(0.75);
 		expect(health.openTodos).toEqual([{ phase: "Implementation", pending: 1, inProgress: 1 }]);
+		expect(health.openTodosSource).toBe("toolResult");
 	});
 });

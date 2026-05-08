@@ -18,6 +18,7 @@ const baseHealth: HealthSnapshot = {
 	consecutiveErrors: 0,
 	turnsSinceUserMilestone: 10,
 	openTodos: [],
+	openTodosSource: "none",
 	recommendedAction: "squash",
 	reasons: ["segment is long"],
 	level: "warn",
@@ -78,7 +79,8 @@ describe("context-management nudges", () => {
 		]);
 		expect(nudge.display).toBe(false);
 		expect(nudge.customType).toBe("context-management/health-nudge");
-		expect(nudge.content).toContain("context_checkout to task-start");
+		expect(nudge.content).toContain("consider context_checkout to task-start");
+		expect(nudge.content).toContain("Current Artifact");
 		expect(nudge.content).toContain("Implementation: 1 in_progress, 1 pending");
 	});
 });

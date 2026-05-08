@@ -70,7 +70,8 @@ describe("context_log", () => {
 		);
 		const result = await createContextLogTool().execute("call", {}, undefined, undefined, makeContext(session));
 		const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-		expect(text).toContain("• Open todos:       Implementation 1 in_progress, 1 pending");
+		expect(text).toContain("• Open todos:       Implementation 1 in_progress, 1 pending (source: toolResult)");
 		expect(result.details?.health.openTodos).toEqual([{ phase: "Implementation", pending: 1, inProgress: 1 }]);
+		expect(result.details?.health.openTodosSource).toBe("toolResult");
 	});
 });

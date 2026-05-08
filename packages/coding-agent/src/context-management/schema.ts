@@ -1,4 +1,5 @@
 export interface ParsedCheckoutMessage {
+	objective?: string;
 	status?: string;
 	reason?: string;
 	importantChanges?: string;
@@ -6,6 +7,7 @@ export interface ParsedCheckoutMessage {
 	decisions?: string;
 	failedAttempts?: string;
 	userConstraints?: string;
+	currentArtifact?: string;
 	verification?: string;
 	openTasks?: string;
 	doNotForget?: string;
@@ -23,6 +25,7 @@ export interface SchemaValidationResult {
 type SectionKey = Exclude<keyof ParsedCheckoutMessage, "raw">;
 
 const SECTION_NAMES: Record<SectionKey, string> = {
+	objective: "Objective",
 	status: "Status",
 	reason: "Reason",
 	importantChanges: "Important Changes",
@@ -30,6 +33,7 @@ const SECTION_NAMES: Record<SectionKey, string> = {
 	decisions: "Decisions",
 	failedAttempts: "Failed Attempts",
 	userConstraints: "User Constraints",
+	currentArtifact: "Current Artifact",
 	verification: "Verification",
 	openTasks: "Open Tasks",
 	doNotForget: "Do Not Forget",
@@ -42,13 +46,15 @@ const NORMALIZED_TO_KEY = new Map<string, SectionKey>(
 );
 
 export const CHECKOUT_MESSAGE_TEMPLATE = [
+	"Objective: <REQUIRED current user goal>",
 	"Status: <current state>",
 	"Reason: <why this checkout/squash/recovery is needed>",
 	"Important Changes: <behavioral or context changes to preserve>",
 	"Files Touched: <files changed or relevant, or 'none'>",
 	"Decisions: <decisions made, or 'none'>",
 	"Failed Attempts: <failed approaches and errors, or 'none'>",
-	"User Constraints: <explicit user/repo constraints to preserve>",
+	"User Constraints: <REQUIRED explicit user/repo constraints; use 'none' only if none exist>",
+	"Current Artifact: <REQUIRED full active plan/spec/design/checklist, durable reference, or 'none' only if no active artifact exists>",
 	"Verification: <commands/scenarios run and results, or 'not run'>",
 	"Open Tasks: <remaining todo phases/tasks, or 'none'>",
 	"Do Not Forget: <critical caveats, or 'none'>",
@@ -87,7 +93,10 @@ export function validateCheckoutSchema(
 ): SchemaValidationResult {
 	const missing: string[] = [];
 	if (opts.strict) {
+		if (!hasValue(parsed.objective)) missing.push("objective");
 		if (!hasValue(parsed.reason)) missing.push("reason");
+		if (!hasValue(parsed.userConstraints)) missing.push("userConstraints");
+		if (!hasValue(parsed.currentArtifact)) missing.push("currentArtifact");
 		if (!hasValue(parsed.nextStep)) missing.push("nextStep");
 		if (!hasValue(parsed.importantChanges) && !hasValue(parsed.filesTouched)) {
 			missing.push("importantChangesOrFilesTouched");

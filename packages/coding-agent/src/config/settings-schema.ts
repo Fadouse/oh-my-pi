@@ -1111,7 +1111,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "context",
 			label: "Agentic Context Management",
 			description:
-				"Register Git-like history tools (context_tag, context_log, context_checkout) and system-prompt guidance so the agent can bookmark, inspect, and squash conversation history. Takes effect on the next session.",
+				"Register Git-like history tools (context_tag, context_log, context_search, context_checkout) and system-prompt guidance so the agent can bookmark, inspect, and range-squash conversation history. Takes effect on the next session.",
 		},
 	},
 
@@ -1132,7 +1132,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "context",
 			label: "Strict Checkout Schema",
 			description:
-				"Reject context_checkout when message is missing required sections (Reason, Next Step, Important Changes/Files Touched).",
+				"Reject context_checkout when message is missing required sections (Objective, Reason, User Constraints, Current Artifact, Next Step, Important Changes/Files Touched).",
 		},
 	},
 

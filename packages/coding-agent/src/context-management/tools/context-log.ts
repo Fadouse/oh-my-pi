@@ -96,7 +96,7 @@ export function createContextLogTool(
 				`• Tool density:     ${(health.toolResultDensity * 100).toFixed(0)}% of last 20 entries`,
 				`• Error streak:     ${health.consecutiveErrors}`,
 				`• User milestone:   ${health.turnsSinceUserMilestone} entries ago`,
-				`• Open todos:       ${formatOpenTodos(health.openTodos)}`,
+				`• Open todos:       ${formatOpenTodos(health.openTodos)} (source: ${health.openTodosSource})`,
 				`• Recommendation:   ${health.recommendedAction}${health.reasons.length > 0 ? ` (${health.reasons.join("; ")})` : ""}`,
 				"---------------------------------------------------",
 			].join("\n");

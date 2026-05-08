@@ -40,7 +40,7 @@ export function buildNudge(
 			`Action: ${action}`,
 			"Open todos:",
 			...todoLines,
-			"Run context_status to inspect, then act unless the immediate next edit needs the raw history.",
+			"Run context_status. If raw context or a recent plan/spec is still needed, tag and continue; checkout only with a complete handoff.",
 			"</context-management-reminder>",
 		].join("\n"),
 		display: false,
@@ -51,6 +51,7 @@ export function buildNudge(
 
 function recommendedToolAction(health: HealthSnapshot): string {
 	if (health.recommendedAction === "tag") return "context_tag <task>-start";
-	if (health.nearestTag) return `context_checkout to ${health.nearestTag} with backupTag <task>-raw`;
-	return "context_tag <task>-start, then consider context_checkout after a stable anchor exists";
+	if (health.nearestTag)
+		return `consider context_checkout to ${health.nearestTag} only after preserving Objective, User Constraints, Current Artifact, Next Step, and backupTag`;
+	return "context_tag <task>-start; checkout later only after a stable anchor and complete handoff exist";
 }

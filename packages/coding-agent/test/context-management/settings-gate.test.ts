@@ -60,6 +60,8 @@ describe("context-management settings gate", () => {
 		expect(result?.systemPrompt?.[0]).toContain("context_tag");
 		expect(result?.systemPrompt?.[0]).toContain("context_search");
 		expect(result?.systemPrompt?.[0]).toContain("context_checkout");
+		expect(result?.systemPrompt?.[0]).toContain("Current Artifact");
+		expect(result?.systemPrompt?.[0]).toContain("MUST NOT pack raw transcript");
 		expect(on.sentMessages).toHaveLength(0);
 	});
 

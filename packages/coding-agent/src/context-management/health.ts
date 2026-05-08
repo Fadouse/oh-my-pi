@@ -1,6 +1,6 @@
 import type { ContextUsage } from "../extensibility/extensions";
 import type { ReadonlySessionManager, SessionEntry } from "../session/session-manager";
-import { getLatestTodoPhasesFromEntries } from "../tools/todo-write";
+import { getLatestTodoPhasesWithSource, type TodoPhaseSource } from "../tools/todo-write";
 import { consecutiveTrailingErrors, recentToolResultDensity, turnsSinceUserMilestone } from "./helpers";
 
 export type ContextHealthAction = "ok" | "tag" | "squash" | "recover";
@@ -28,6 +28,7 @@ export interface HealthSnapshot {
 	consecutiveErrors: number;
 	turnsSinceUserMilestone: number;
 	openTodos: { phase: string; pending: number; inProgress: number }[];
+	openTodosSource: TodoPhaseSource;
 	recommendedAction: ContextHealthAction;
 	reasons: string[];
 	level: ContextHealthLevel;
@@ -46,7 +47,7 @@ export function computeContextHealth(input: {
 	const toolResultDensity = recentToolResultDensity(branch, 20);
 	const consecutiveErrors = consecutiveTrailingErrors(branch);
 	const userMilestoneDistance = turnsSinceUserMilestone(branch);
-	const openTodos = summarizeOpenTodos(branch);
+	const openTodosResult = summarizeOpenTodos(branch);
 	const hiddenInBranch = branch.filter(entry => entry.type === "custom_message").length;
 
 	const base: Omit<HealthSnapshot, "recommendedAction" | "reasons" | "level"> = {
@@ -59,7 +60,8 @@ export function computeContextHealth(input: {
 		hiddenInBranch,
 		consecutiveErrors,
 		turnsSinceUserMilestone: userMilestoneDistance,
-		openTodos,
+		openTodos: openTodosResult.openTodos,
+		openTodosSource: openTodosResult.source,
 	};
 
 	if (!input.thresholds.enabled) {
@@ -105,12 +107,19 @@ function distanceToNearestTag(sm: ReadonlySessionManager): { stepsSinceTag: numb
 	return { stepsSinceTag, nearestTag: null };
 }
 
-function summarizeOpenTodos(branch: SessionEntry[]): HealthSnapshot["openTodos"] {
-	return getLatestTodoPhasesFromEntries(branch)
-		.map(phase => ({
-			phase: phase.name,
-			pending: phase.tasks.filter(task => task.status === "pending").length,
-			inProgress: phase.tasks.filter(task => task.status === "in_progress").length,
-		}))
-		.filter(phase => phase.pending > 0 || phase.inProgress > 0);
+function summarizeOpenTodos(branch: SessionEntry[]): {
+	openTodos: HealthSnapshot["openTodos"];
+	source: TodoPhaseSource;
+} {
+	const result = getLatestTodoPhasesWithSource(branch);
+	return {
+		source: result.source,
+		openTodos: result.phases
+			.map(phase => ({
+				phase: phase.name,
+				pending: phase.tasks.filter(task => task.status === "pending").length,
+				inProgress: phase.tasks.filter(task => task.status === "in_progress").length,
+			}))
+			.filter(phase => phase.pending > 0 || phase.inProgress > 0),
+	};
 }

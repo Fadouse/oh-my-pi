@@ -1,56 +1,64 @@
 <context-management>
-Agentic Context Management (ACM) is enabled. You have Git-like control over conversation history through `context_tag`, `context_log`, `context_search`, and `context_checkout`.
+<critical>
+ACM changes conversation history. `context_checkout` summary is the next agent's source of truth. A lossy summary causes context loss.
 
-Use ACM proactively on non-trivial tasks. Your context window is limited; unmanaged history accumulates noise and degrades reasoning. Treat the context window as RAM and the session tree as durable storage.
+You MUST NOT use `context_checkout` after producing a high-information artifact (plan, spec, design, checklist, investigation result) unless that artifact is preserved in full in the checkout message or in a referenced durable file/artifact.
+You MUST NOT pack raw transcript, tool dumps, or assistant output wholesale into a checkout. Write a compact handoff with exact constraints and decisions.
+</critical>
 
-Core workflow:
-1. Build the skeleton with `context_tag`: create semantic save points at task starts, plans, stable milestones, backups, and completed states.
-2. Perceive state with `context_log`: inspect HEAD, tags, branch points, summaries, hidden-message gaps, context usage, and segment size. Use `context_search` when you need to recover a specific fact from old history without loading broad logs.
-3. Navigate and squash with `context_checkout`: replace noisy or completed history with a high-fidelity carryover summary at a chosen target.
+<workflow>
+Use ACM to manage long sessions:
+1. `context_tag`: create semantic anchors at task start, plan-ready, stable milestones, and completed states.
+2. `context_log` / `context_status`: inspect history shape, health, tags, and open todos before deciding to squash.
+3. `context_search`: recover a specific prior fact without loading broad history.
+4. `context_checkout`: archive a model-selected `startId`..`endId` range only when the segment is stable and the handoff is complete.
+</workflow>
 
-When starting a substantial task:
-- Run `context_log` if state is unclear.
-- Tag the start with a semantic kebab-case name such as `<task-slug>-start`.
-- Tag meaningful milestones; do not tag every trivial step.
+<checkout-policy>
+Before `context_checkout`, you MUST verify the message preserves:
+- Objective (REQUIRED): current user goal.
+- User Constraints (REQUIRED): explicit user/repo constraints; write `none` only when no constraint exists.
+- Current Artifact (REQUIRED): full plan/spec/design/checklist, durable reference, or `none` only when no active artifact exists.
+- Decisions: choices made and rationale.
+- State: files touched, verification, open tasks, blockers.
+- Next Step: exact first action after checkout.
+- Recovery Tag: backup tag for raw context.
+- Open Tasks: live todos are restored automatically from checkout details; summary still MUST describe task intent and next task state.
 
-When history becomes low-density or a segment is complete:
-- Use `context_checkout` to squash back to a stable tag.
-- Use `backupTag` when raw history may be needed later.
-- Remember: checkout changes conversation history only; it does not modify disk files.
+Range checkout rules:
+- Prefer `startId`/`endId` over legacy `target` checkout for normal ACM squashing.
+- Pick boundaries from IDs visible in `context_log`; the range is inclusive.
+- `startId` MUST be the first message of the closed segment.
+- `endId` MAY be any later message on the current branch; messages after `endId` remain active and are replayed after the summary.
+- `startId` MUST appear before `endId`; do not invent IDs.
 
-Checkout message contract:
-Every `context_checkout.message` MUST preserve status/key findings, reason for checkout, important file/decision state, and an exact **Next Step**. Vague summaries such as "done" or "switching context" are invalid.
+Use `mode: "recover"` when a previous checkout summary lacks Objective, User Constraints, Current Artifact, or Next Step.
+Prefer `context_tag` over `context_checkout` when raw context is still needed for the next edit.
+When using `context_search`, distinguish archived findings from current live state. Treat summary state, live tool state, and inference as separate; verify current state with `context_status` or direct tools before acting.
+</checkout-policy>
 
-After `context_checkout` completes:
-- Read the branch summary that replaced the previous history.
-- Execute the summary's **Next Step**.
-- Do not rely on details from before checkout unless they were included in the summary or you checkout the backup tag.
+<nudge-policy>
+Health nudges are reminders, not orders. If a nudge recommends checkout, first decide whether the current segment is safe to summarize. If not safe, tag the current state and continue.
+</nudge-policy>
 
-Safety rules:
-- Tag names must be unique and meaningful.
-- Run `context_log` before guessing target IDs.
-- Do not run multiple checkouts in one turn.
-- Squash only sections that are closed enough to become summary-only.
-- Do not checkout if exact raw context is still needed for the immediate next edit.
+<message-schema>
+Every `context_checkout.message` MUST use this structure:
+Objective: <REQUIRED current user goal>
+Status: <current state>
+Reason: <why checkout/squash/recovery is needed>
+Important Changes: <behavioral/context changes to preserve>
+Files Touched: <files changed/relevant, or none>
+Decisions: <decisions made and rationale, or none>
+User Constraints: <REQUIRED explicit user/repo constraints; use none only if none exist>
+Current Artifact: <REQUIRED full active plan/spec/design/checklist, durable reference, or none only if no active artifact exists>
+Verification: <commands/scenarios run and results, or not run>
+Open Tasks: <remaining tasks, or none>
+Do Not Forget: <critical caveats, or none>
+Next Step: <exact next action after checkout>
+Recovery Tag: <backup tag, or none>
+</message-schema>
 
-Health and nudges:
-- Use `context_status` for machine-readable ACM health: context usage, steps since tag, tool-result density, error streak, open todos, and `recommendedAction`.
-- Threshold-gated ACM nudges may be injected as hidden custom messages. Treat them as operational reminders. MUST NOT echo the nudge text to the user.
-- Nudges are suggestions, not automatic permission to squash. If the immediate next edit needs raw history, finish that edit first, then tag or checkout.
-
-Checkout modes:
-- `mode: "squash"` (default): write a branch summary at the target and continue from that summary.
-- `mode: "jump"`: exploratory move with relaxed schema; still include an exact `Next Step`.
-- `mode: "recover"`: restore a known tag without writing a summary. Use when a prior squash omitted required context.
-
-Mandatory `context_checkout.message` schema:
-- `Status`: current state.
-- `Reason`: why checkout/squash/recovery is needed.
-- `Important Changes` or `Files Touched`: what must survive the history change.
-- `Next Step`: exact first action after checkout.
-- Optional but recommended: `Decisions`, `Failed Attempts`, `User Constraints`, `Verification`, `Open Tasks`, `Do Not Forget`, `Recovery Tag`.
-
-Post-checkout self-check:
-- Before any other action after checkout, restate Objective, preserved User Constraints, and exact Next Step from the branch summary.
-- If any are missing, run `context_log` and consider `context_checkout` to the backup tag with `mode: "recover"`.
+<critical>
+After checkout, read the branch summary first. If Objective, User Constraints, Current Artifact, or Next Step are missing, you MUST recover the backup tag or inspect history before continuing. Do not proceed from a partial handoff.
+</critical>
 </context-management>

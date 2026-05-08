@@ -4,10 +4,11 @@ Agentic Context Management (ACM) is a built-in `packages/coding-agent` extension
 
 Enable it in `/settings → Context → Agentic Context Management`. The setting key is `contextManagement.enabled`; it is off by default and takes effect on the next session (or after `/reload-plugins`).
 
-When enabled, omp registers four tools:
+When enabled, omp registers five tools:
 
 - `context_tag`: bookmark an existing session-tree entry with a unique semantic label.
 - `context_log`: render a compact history view with HEAD, user messages, tags, branch points, summaries, hidden-message gaps, context health, and open todos.
+- `context_search`: search current-session ACM history for a specific fact without loading broad logs.
 - `context_status`: return the same ACM health snapshot as compact JSON for agent decisions.
 - `context_checkout`: create a branch summary at a target entry and navigate to that summary after the current agent turn ends.
 The extension does not expose a `context-management` skill. Instead, when ACM is enabled it appends ACM operating guidance directly to the model system prompt before each agent turn, similar to dynamic-context-pruning style plugins.
@@ -23,15 +24,23 @@ ACM computes a per-turn health snapshot from context usage, distance from the ne
 
 `context_checkout` is deferred for agent-state safety:
 
-1. The tool resolves the requested target (`root`, a hex entry ID, or a tag name).
-2. It optionally tags the current leaf with `backupTag`.
-3. It writes a `branch_summary` entry at the target using the provided carryover message.
-4. At `turn_end`, the extension aborts the current turn.
-5. At `agent_end`, it calls `navigateTree(summaryEntryId, { summarize: false })` so the agent message list and UI are rebuilt from the new leaf.
-6. It injects a hidden follow-up prompt telling the agent to read the new summary and execute its **Next Step**.
+1. For range checkout, the model supplies `startId` and `endId` from visible history IDs; the inclusive range may end before current HEAD, and later entries are replayed after the summary.
+2. For legacy checkout/recover, the tool resolves `target` (`root`, an entry ID, or a tag name).
+3. It optionally tags the current leaf with `backupTag`.
+4. It writes a `branch_summary` entry before the selected range (range mode) or at the target (legacy mode) using the provided handoff message.
+5. At `turn_end`, the extension aborts the current turn.
+6. At `agent_end`, it calls `navigateTree(summaryEntryId, { summarize: false })` so the agent message list and UI are rebuilt from the new leaf.
+7. It injects a hidden follow-up prompt that blocks implementation if Objective, User Constraints, Current Artifact, or Next Step are missing.
 
+`context_checkout.message` is schema-validated by default (`contextManagement.checkout.strictSchema`). Strict mode requires section presence for `Objective`, `Reason`, `User Constraints`, `Current Artifact`, `Next Step`, and either `Important Changes` or `Files Touched`. `User Constraints` and `Current Artifact` may contain `none` only when there is truly nothing to preserve. Failure returns a reusable template and does not create a backup tag, branch summary, or pending checkout.
 
-`context_checkout.message` is schema-validated by default (`contextManagement.checkout.strictSchema`). Strict mode requires `Reason`, `Next Step`, and either `Important Changes` or `Files Touched`. Failure returns a reusable template and does not create a backup tag, branch summary, or pending checkout.
+Checkout summaries are handoffs, not transcript archives. High-information artifacts such as plans, specs, designs, checklists, and investigation findings must be preserved in `Current Artifact` or referenced from durable files/artifacts before checkout.
+
+Range checkout stores `details.range` with the resolved start/end entry IDs, original refs, parent ID, topic, selected entry IDs, and replayed suffix entry IDs. The original session entries remain in the session tree for recovery and later UI expansion; only the active context replaces the selected range with the summary.
+
+If checkout happens while live todos exist, ACM stores them in summary details. Todo state is restored from branch summary details after navigation, so `context_status` continues to reflect live open tasks instead of relying on the model to rewrite them.
+
+Optional string parameters are normalized before mode selection. Blank `target`, `startId`, `endId`, `topic`, and `backupTag` values are treated as omitted, so UI/tool-call serializers may include empty fields without forcing the wrong checkout mode.
 
 Checkout supports three modes:
 

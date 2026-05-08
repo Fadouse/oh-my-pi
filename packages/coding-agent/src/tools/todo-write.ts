@@ -131,13 +131,31 @@ function normalizeInProgressTask(phases: TodoPhase[]): void {
 
 export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
 
+export type TodoPhaseSource = "none" | "userEdit" | "branchSummary" | "toolResult";
+
+export interface LatestTodoPhasesResult {
+	phases: TodoPhase[];
+	source: TodoPhaseSource;
+}
+
 export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPhase[] {
+	return getLatestTodoPhasesWithSource(entries).phases;
+}
+
+export function getLatestTodoPhasesWithSource(entries: SessionEntry[]): LatestTodoPhasesResult {
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
 		if (entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) {
 			const data = entry.data as { phases?: unknown } | undefined;
 			if (data && Array.isArray(data.phases)) {
-				return clonePhases(data.phases as TodoPhase[]);
+				return { phases: clonePhases(data.phases as TodoPhase[]), source: "userEdit" };
+			}
+			continue;
+		}
+		if (entry.type === "branch_summary") {
+			const details = entry.details as { openTodos?: unknown } | undefined;
+			if (details && Array.isArray(details.openTodos)) {
+				return { phases: clonePhases(details.openTodos as TodoPhase[]), source: "branchSummary" };
 			}
 			continue;
 		}
@@ -148,10 +166,10 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 		const details = message.details as { phases?: unknown } | undefined;
 		if (!details || !Array.isArray(details.phases)) continue;
 
-		return clonePhases(details.phases as TodoPhase[]);
+		return { phases: clonePhases(details.phases as TodoPhase[]), source: "toolResult" };
 	}
 
-	return [];
+	return { phases: [], source: "none" };
 }
 
 function resolveTaskOrError(
