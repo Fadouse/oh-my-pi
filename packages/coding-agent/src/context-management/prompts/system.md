@@ -28,10 +28,11 @@ Before `context_checkout`, you MUST verify the message preserves:
 Range checkout rules:
 - Prefer `startId`/`endId` over legacy `target` checkout for normal ACM squashing.
 - Pick boundaries from IDs visible in `context_log`; the range is inclusive.
-- `startId` MUST be the first message of the closed segment.
+- Before range checkout, create a semantic `context_tag` at the checkpoint immediately before the segment you plan to archive.
+- `startId` MUST be the first message after that tagged checkpoint. The tool rejects unanchored starts by default.
 - `endId` MAY be any later message on the current branch; messages after `endId` remain active and are replayed after the summary.
 - `startId` MUST appear before `endId`; do not invent IDs.
-
+- Use `allowUntaggedStart: true` only as an unsafe escape hatch when no usable anchor exists, and state why in the checkout message.
 Use `mode: "recover"` when a previous checkout summary lacks Objective, User Constraints, Current Artifact, or Next Step.
 Prefer `context_tag` over `context_checkout` when raw context is still needed for the next edit.
 When using `context_search`, distinguish archived findings from current live state. Treat summary state, live tool state, and inference as separate; verify current state with `context_status` or direct tools before acting.

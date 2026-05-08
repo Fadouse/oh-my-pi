@@ -232,6 +232,7 @@ export class TUI extends Container {
 	#clearOnShrink = $flag("PI_CLEAR_ON_SHRINK"); // Clear empty rows when content shrinks (default: off)
 	#maxLinesRendered = 0; // Line count from last render, used for viewport calculation
 	#fullRedrawCount = 0;
+	#forceRedrawClearScrollback: boolean | undefined;
 	#stopped = false;
 
 	// Overlay stack for modal components rendered on top of base content
@@ -563,7 +564,9 @@ export class TUI extends Container {
 		this.terminal.stop();
 	}
 
-	requestRender(force = false): void {
+	requestRender(forceOrOptions: boolean | { force?: boolean; clearScrollback?: boolean } = false): void {
+		const force = typeof forceOrOptions === "boolean" ? forceOrOptions : (forceOrOptions.force ?? false);
+		const clearScrollback = typeof forceOrOptions === "boolean" ? true : (forceOrOptions.clearScrollback ?? true);
 		if (force) {
 			this.#previousLines = [];
 			this.#previousWidth = -1; // -1 triggers widthChanged, forcing a full clear
@@ -572,6 +575,7 @@ export class TUI extends Container {
 			this.#hardwareCursorRow = 0;
 			this.#viewportTopRow = 0;
 			this.#maxLinesRendered = 0;
+			this.#forceRedrawClearScrollback = clearScrollback;
 		}
 		if (this.#renderRequested) return;
 		this.#renderRequested = true;
@@ -1006,17 +1010,37 @@ export class TUI extends Container {
 		const widthChanged = this.#previousWidth !== 0 && this.#previousWidth !== width;
 		const heightChanged = this.#previousHeight !== 0 && this.#previousHeight !== height;
 
-		// Helper to clear scrollback and viewport and render all new lines
-		const fullRender = (clear: boolean): void => {
+		const forcedClearScrollback = this.#forceRedrawClearScrollback;
+		this.#forceRedrawClearScrollback = undefined;
+
+		// Helper to redraw the current screen. When preserving scrollback, render
+		// only the visible viewport slice; writing the full transcript from home
+		// would scroll it through the terminal and duplicate it into scrollback on
+		// every Ctrl+O toggle.
+		const fullRender = (clear: boolean, clearScrollback = true): void => {
 			this.#fullRedrawCount += 1;
 			let buffer = "\x1b[?2026h"; // Begin synchronized output
-			// Skip clearing scrollback (3J) in multiplexers — users actively navigate scrollback history
-			if (clear) buffer += isMultiplexer ? "\x1b[2J\x1b[H" : "\x1b[2J\x1b[H\x1b[3J";
 			const reset = SEGMENT_RESET;
-			for (let i = 0; i < newLines.length; i++) {
-				if (i > 0) buffer += "\r\n";
-				const line = newLines[i];
-				buffer += TERMINAL.isImageLine(line) ? line : line + reset;
+			if (clear && !clearScrollback) {
+				const viewportTop = Math.max(0, newLines.length - height);
+				const renderLines = newLines.slice(viewportTop, viewportTop + height);
+				buffer += "\x1b[H";
+				for (let i = 0; i < height; i++) {
+					if (i > 0) buffer += "\r\n";
+					buffer += "\r\x1b[2K";
+					const line = renderLines[i] ?? "";
+					if (line) buffer += TERMINAL.isImageLine(line) ? line : line + reset;
+				}
+			} else {
+				const renderLines = newLines;
+				if (clear) {
+					buffer += isMultiplexer ? "\x1b[2J\x1b[H" : "\x1b[2J\x1b[H\x1b[3J";
+				}
+				for (let i = 0; i < renderLines.length; i++) {
+					if (i > 0) buffer += "\r\n";
+					const line = renderLines[i];
+					buffer += TERMINAL.isImageLine(line) ? line : line + reset;
+				}
 			}
 			buffer += "\x1b[?2026l"; // End synchronized output
 			this.terminal.write(buffer);
@@ -1029,6 +1053,28 @@ export class TUI extends Container {
 				this.#maxLinesRendered = Math.max(this.#maxLinesRendered, newLines.length);
 			}
 			this.#viewportTopRow = Math.max(0, this.#maxLinesRendered - height);
+			this.#positionHardwareCursor(cursorPos, newLines.length);
+			this.#previousLines = newLines;
+			this.#previousWidth = width;
+			this.#previousHeight = height;
+		};
+
+		const repaintViewport = (targetViewportTop: number): void => {
+			this.#fullRedrawCount += 1;
+			const renderLines = newLines.slice(targetViewportTop, targetViewportTop + height);
+			let buffer = "\x1b[?2026h\x1b[H";
+			for (let i = 0; i < height; i++) {
+				if (i > 0) buffer += "\r\n";
+				buffer += "\r\x1b[2K";
+				const line = renderLines[i] ?? "";
+				if (line) buffer += TERMINAL.isImageLine(line) ? line : line + SEGMENT_RESET;
+			}
+			buffer += "\x1b[?2026l";
+			this.terminal.write(buffer);
+			this.#cursorRow = Math.max(0, newLines.length - 1);
+			this.#hardwareCursorRow = Math.min(this.#cursorRow, targetViewportTop + height - 1);
+			this.#maxLinesRendered = newLines.length;
+			this.#viewportTopRow = targetViewportTop;
 			this.#positionHardwareCursor(cursorPos, newLines.length);
 			this.#previousLines = newLines;
 			this.#previousWidth = width;
@@ -1053,7 +1099,7 @@ export class TUI extends Container {
 		// Width changes always need a full re-render because wrapping changes.
 		if (widthChanged) {
 			logRedraw(`terminal width changed (${this.#previousWidth} -> ${width})`);
-			fullRender(true);
+			fullRender(true, forcedClearScrollback ?? true);
 			return;
 		}
 
@@ -1062,7 +1108,7 @@ export class TUI extends Container {
 		// In that environment, a full redraw causes the entire history to replay on every toggle.
 		if (heightChanged && !isTermuxSession() && !isMultiplexer) {
 			logRedraw(`terminal height changed (${this.#previousHeight} -> ${height})`);
-			fullRender(true);
+			fullRender(true, forcedClearScrollback ?? true);
 			return;
 		}
 
@@ -1071,7 +1117,7 @@ export class TUI extends Container {
 		// Configurable via setClearOnShrink() or PI_CLEAR_ON_SHRINK=0 env var
 		if (this.#clearOnShrink && newLines.length < this.#previousLines.length && this.overlayStack.length === 0) {
 			logRedraw(`clearOnShrink (prev=${this.#previousLines.length}, new=${newLines.length})`);
-			fullRender(true);
+			fullRender(true, forcedClearScrollback ?? true);
 			return;
 		}
 
@@ -1120,7 +1166,7 @@ export class TUI extends Container {
 				const extraLines = this.#previousLines.length - newLines.length;
 				if (extraLines > height) {
 					logRedraw(`extraLines > height (${extraLines} > ${height})`);
-					fullRender(true);
+					fullRender(true, forcedClearScrollback ?? true);
 					return;
 				}
 				const clearStartOffset = newLines.length > 0 && extraLines > 0 ? 1 : 0;
@@ -1156,10 +1202,22 @@ export class TUI extends Container {
 			if (newViewportTop < previousContentViewportTop) {
 				// Viewport needs to shift up — can only be done with a full redraw
 				logRedraw(`viewport shift up (new=${newViewportTop} < prev=${previousContentViewportTop})`);
-				fullRender(true);
+				fullRender(true, forcedClearScrollback ?? true);
 				return;
 			}
-			// Viewport is stable or shifting down — skip invisible above-viewport changes
+			if (
+				newViewportTop > previousContentViewportTop &&
+				newLines.length > this.#previousLines.length &&
+				newLines.at(-1) === this.#previousLines.at(-1)
+			) {
+				// Content grew above the visible viewport. The bottom-anchored viewport
+				// shifts down, so repaint the whole visible slice without clearing
+				// scrollback or replaying the full transcript.
+				logRedraw(`viewport shift down (new=${newViewportTop} > prev=${previousContentViewportTop})`);
+				repaintViewport(newViewportTop);
+				return;
+			}
+			// Viewport is stable — skip invisible above-viewport changes.
 			firstChanged = previousContentViewportTop;
 			if (lastChanged < firstChanged) {
 				// All changes are above the viewport — nothing visible to update

@@ -83,6 +83,7 @@ export interface InteractiveModeContext {
 	isBackgrounded: boolean;
 	isBashMode: boolean;
 	toolOutputExpanded: boolean;
+	checkoutTranscriptExpanded: boolean;
 	todoExpanded: boolean;
 	planModeEnabled: boolean;
 	loopModeEnabled: boolean;

@@ -17,6 +17,7 @@
 ### Fixed
 
 - Fixed Anthropic cache-policy query-source propagation so top-level sessions send `repl_main_thread` and subagents send `agent:<id>`.
+- Fixed ACM checkout completion status and transcript redraw behavior so the checkout summary block appears immediately without a manual TUI refresh, and expanded original-history content stays inside the checkout block background.
 
 ## [14.7.6] - 2026-05-07
 ### Changed

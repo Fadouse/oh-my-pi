@@ -7,7 +7,7 @@ import { getLatestTodoPhasesFromEntries, type TodoPhase } from "../../tools/todo
 import { ToolError } from "../../tools/tool-errors";
 import { resolveTargetId } from "../helpers";
 import { parseCheckoutMessage, validateCheckoutSchema } from "../schema";
-import { setPending } from "../state";
+import { clearPending, setPending } from "../state";
 
 export const contextCheckoutSchema = Type.Object({
 	target: Type.Optional(
@@ -19,7 +19,7 @@ export const contextCheckoutSchema = Type.Object({
 	startId: Type.Optional(
 		Type.String({
 			description:
-				"Range checkout start boundary. Use an entry ID or tag visible in context_log. The selected range is inclusive.",
+				"Range checkout start boundary. Use an entry ID visible in context_log. By default, this entry must be immediately after a tagged checkpoint; the selected range is inclusive.",
 		}),
 	),
 	endId: Type.Optional(
@@ -30,6 +30,12 @@ export const contextCheckoutSchema = Type.Object({
 	),
 	topic: Type.Optional(
 		Type.String({ description: "Short label for the checkout range, used for display and history." }),
+	),
+	allowUntaggedStart: Type.Optional(
+		Type.Boolean({
+			description:
+				"Unsafe escape hatch for range checkout. By default, startId must be immediately after an existing context_tag anchor. Set true only when no usable anchor exists.",
+		}),
 	),
 	message: Type.String({
 		description:
@@ -61,6 +67,9 @@ export interface ContextCheckoutDetails {
 		startRef: string;
 		endRef: string;
 		parentId: string | null;
+		anchorTagId?: string;
+		anchorTagName?: string;
+		untaggedStartAllowed?: boolean;
 		entryIds: string[];
 		suffixEntryIds: string[];
 		replayedSuffixEntryIds?: string[];
@@ -81,6 +90,7 @@ export function createContextCheckoutTool(
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const runtimeSettings = configuredSettings ?? Settings.isolated({ "contextManagement.enabled": true });
 			const sm = ctx.sessionManager as SessionManager;
+			clearPending(sm.getSessionId());
 			const targetParamInput = normalizeOptionalParam(params.target);
 			const startParam = normalizeOptionalParam(params.startId);
 			const endParam = normalizeOptionalParam(params.endId);
@@ -96,7 +106,11 @@ export function createContextCheckoutTool(
 				throw new ToolError("Recover mode requires target; range checkout only supports squash/jump");
 			}
 
-			const checkoutTarget = rangeMode ? resolveRangeCheckoutTarget(sm, startParam, endParam, topic) : undefined;
+			const checkoutTarget = rangeMode
+				? resolveRangeCheckoutTarget(sm, startParam, endParam, topic, {
+						allowUntaggedStart: params.allowUntaggedStart === true || mode === "jump",
+					})
+				: undefined;
 			const targetParam = targetParamInput ?? checkoutTarget?.parentRef;
 			if (!targetParam) {
 				throw new ToolError("context_checkout requires either target or both startId and endId");
@@ -247,6 +261,7 @@ function resolveRangeCheckoutTarget(
 	startParam: string | undefined,
 	endParam: string | undefined,
 	topic: string | undefined,
+	options: { allowUntaggedStart: boolean },
 ): ResolvedRangeCheckoutTarget {
 	if (!startParam || !endParam) {
 		throw new ToolError("Range checkout requires both startId and endId");
@@ -276,6 +291,12 @@ function resolveRangeCheckoutTarget(
 	const selectedEntries = branch.slice(startIndex, endIndex + 1);
 	const suffixEntries = branch.slice(endIndex + 1);
 	const parentId = startEntry.parentId;
+	const anchor = resolveRangeAnchor(sm, parentId);
+	if (!anchor && !options.allowUntaggedStart) {
+		throw new ToolError(
+			`Range checkout startId must be immediately after a tagged checkpoint. Tag the entry before ${startParam} with context_tag, choose a startId after the nearest tag, or set allowUntaggedStart only when no safe anchor exists.`,
+		);
+	}
 	return {
 		parentId,
 		parentRef: parentId ?? "root",
@@ -288,11 +309,24 @@ function resolveRangeCheckoutTarget(
 			startRef: startParam,
 			endRef: endParam,
 			parentId,
+			...(anchor ? { anchorTagId: anchor.id, anchorTagName: anchor.name } : {}),
+			...(!anchor && options.allowUntaggedStart ? { untaggedStartAllowed: true } : {}),
 			entryIds: selectedEntries.map(entry => entry.id),
 			suffixEntryIds: suffixEntries.map(entry => entry.id),
 		},
 		suffixEntries,
 	};
+}
+
+function resolveRangeAnchor(sm: SessionManager, parentId: string | null): { id: string; name: string } | undefined {
+	if (!parentId) return undefined;
+	const directLabel = sm.getLabel(parentId);
+	if (directLabel) return { id: parentId, name: directLabel };
+	const parentEntry = sm.getEntry(parentId);
+	if (parentEntry?.type === "label" && parentEntry.label) {
+		return { id: parentEntry.targetId, name: parentEntry.label };
+	}
+	return undefined;
 }
 
 function replaySuffixEntries(sm: SessionManager, entries: SessionEntry[]): string[] {

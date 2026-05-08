@@ -27,6 +27,7 @@ interface AppKeybindings {
 	"app.model.select": true;
 	"app.model.selectTemporary": true;
 	"app.tools.expand": true;
+	"app.checkout.expand": true;
 	"app.editor.external": true;
 	"app.message.followUp": true;
 	"app.message.dequeue": true;
@@ -104,6 +105,10 @@ export const KEYBINDINGS = {
 	"app.tools.expand": {
 		defaultKeys: "ctrl+o",
 		description: "Expand tools",
+	},
+	"app.checkout.expand": {
+		defaultKeys: "alt+o",
+		description: "Expand checkout transcript",
 	},
 	"app.editor.external": {
 		defaultKeys: "ctrl+g",

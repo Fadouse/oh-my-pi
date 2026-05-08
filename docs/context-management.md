@@ -47,15 +47,19 @@ Checkout changes conversation history only. It does not modify working-tree file
 
 ## Range checkout
 
-For range checkout, the model supplies `startId` and `endId` from visible history IDs. The selected inclusive range is replaced in the active message list by one `branch_summary` entry. The original entries remain in the session tree for recovery and UI expansion.
+For range checkout, the model supplies `startId` and `endId` from visible history IDs. By default, `startId` must be the first entry after an existing `context_tag` anchor: the entry immediately before `startId` must have a tag. This forces the model to declare a safe checkpoint before selecting the range. The selected inclusive range is replaced in the active message list by one `branch_summary` entry. The original entries remain in the session tree for recovery and UI expansion.
 
 Range checkout may end before current HEAD. Entries after `endId` are replayed after the summary, so useful suffix context is not lost.
+
+If no usable anchor exists, `allowUntaggedStart: true` is an explicit unsafe escape hatch. `mode: "jump"` also permits untagged starts for exploratory movement. Untagged range checkout records `details.range.untaggedStartAllowed` so logs and UI can distinguish it from a checkpoint-anchored squash.
 
 Range checkout stores `details.range` with:
 
 - resolved start/end entry IDs
 - original start/end refs
 - parent ID
+- anchor tag ID/name when the start is anchored
+- `untaggedStartAllowed` when the unsafe escape hatch was used
 - topic
 - selected entry IDs
 - suffix entry IDs

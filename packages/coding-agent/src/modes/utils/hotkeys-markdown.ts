@@ -45,6 +45,7 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 		`| \`${appKey(bindings, "app.plan.toggle")}\` | Toggle plan mode |`,
 		`| \`${appKey(bindings, "app.history.search")}\` | Search prompt history |`,
 		`| \`${appKey(bindings, "app.tools.expand")}\` | Toggle tool output expansion |`,
+		`| \`${appKey(bindings, "app.checkout.expand")}\` | Toggle checkout transcript expansion |`,
 		`| \`${appKey(bindings, "app.thinking.toggle")}\` | Toggle thinking block visibility |`,
 		`| \`${appKey(bindings, "app.editor.external")}\` | Edit message in external editor |`,
 		`| \`${appKey(bindings, "app.clipboard.pasteImage")}\` | Paste image from clipboard |`,

@@ -19,6 +19,9 @@ export const setPending = (sid: string, pending: PendingCheckout): PendingChecko
 	return previous;
 };
 
+export const clearPending = (sid: string): void => {
+	pendingBySession.delete(sid);
+};
 export const peekPending = (sid: string): PendingCheckout | undefined => pendingBySession.get(sid);
 
 export const takePending = (sid: string): PendingCheckout | undefined => {

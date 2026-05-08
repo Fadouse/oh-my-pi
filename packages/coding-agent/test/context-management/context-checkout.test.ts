@@ -55,6 +55,11 @@ describe("context_checkout", () => {
 		expect(abort).toHaveBeenCalledTimes(1);
 		await harness.emit("agent_end", ctx);
 		expect(navigateTree).toHaveBeenCalledWith(summaryEntryId, { summarize: false });
+		expect(notify).toHaveBeenCalledTimes(1);
+		const notification = notify.mock.calls[0]?.[0];
+		expect(notification).toContain("Summary block added to transcript.");
+		expect(notification).not.toContain("Objective:");
+		expect(notification).not.toContain("Next Step:");
 		expect(peekPending(session.getSessionId())).toBeUndefined();
 		expect(harness.sentMessages).toHaveLength(1);
 	});
@@ -62,6 +67,8 @@ describe("context_checkout", () => {
 	it("stages range checkout from model-selected start and end boundaries", async () => {
 		const session = SessionManager.inMemory();
 		const before = session.appendMessage(user("keep before"));
+		session.appendLabelChange(before, "range-anchor");
+		const anchor = session.getLeafId();
 		const start = session.appendMessage(user("range start"));
 		const end = session.appendMessage(user("range end"));
 		const result = await createContextCheckoutTool(makeApi(session)).execute(
@@ -82,22 +89,83 @@ describe("context_checkout", () => {
 		const summary = session.getEntry(result.details?.summaryEntryId ?? "");
 		expect(session.getLabel(end)).toBe("range-raw");
 		expect(summary?.type).toBe("branch_summary");
-		expect(summary?.parentId).toBe(before);
+		expect(summary?.parentId).toBe(anchor);
 		expect(result.details?.range).toMatchObject({
 			topic: "Range Test",
 			startId: start,
 			endId: end,
 			startRef: start,
 			endRef: end,
-			parentId: before,
+			parentId: anchor,
+			anchorTagId: before,
+			anchorTagName: "range-anchor",
 			entryIds: [start, end],
 		});
 		expect(peekPending(session.getSessionId())?.summaryEntryId).toBe(result.details?.summaryEntryId);
 	});
 
+	it("rejects range checkout when start is not anchored after a tag", async () => {
+		const session = SessionManager.inMemory();
+		session.appendMessage(user("untagged before"));
+		const start = session.appendMessage(user("range start"));
+		const end = session.appendMessage(user("range end"));
+		let error: unknown;
+
+		try {
+			await createContextCheckoutTool(makeApi(session)).execute(
+				"call",
+				{
+					startId: start,
+					endId: end,
+					message:
+						"Objective: archive completed range\nReason: completed range\nFiles Touched: none\nUser Constraints: none\nCurrent Artifact: none\nNext Step: continue.",
+				},
+				undefined,
+				undefined,
+				makeContext(session),
+			);
+		} catch (err) {
+			error = err;
+		}
+
+		expect(error).toBeInstanceOf(Error);
+		expect(String(error)).toContain("must be immediately after a tagged checkpoint");
+	});
+
+	it("allows explicitly unsafe untagged range checkout and records that fact", async () => {
+		const session = SessionManager.inMemory();
+		const before = session.appendMessage(user("untagged before"));
+		const start = session.appendMessage(user("range start"));
+		const end = session.appendMessage(user("range end"));
+
+		const result = await createContextCheckoutTool(makeApi(session)).execute(
+			"call",
+			{
+				startId: start,
+				endId: end,
+				allowUntaggedStart: true,
+				message:
+					"Objective: archive completed range\nReason: completed range\nFiles Touched: none\nUser Constraints: none\nCurrent Artifact: none\nNext Step: continue.",
+			},
+			undefined,
+			undefined,
+			makeContext(session),
+		);
+
+		expect(session.getEntry(result.details?.summaryEntryId ?? "")?.parentId).toBe(before);
+		expect(result.details?.range).toMatchObject({
+			startId: start,
+			endId: end,
+			parentId: before,
+			untaggedStartAllowed: true,
+		});
+	});
+
 	it("ignores blank target when range boundaries are provided", async () => {
 		const session = SessionManager.inMemory();
 		const before = session.appendMessage(user("keep before"));
+		session.appendLabelChange(before, "blank-range-anchor");
+		const anchor = session.getLeafId();
 		const start = session.appendMessage(user("range start"));
 		const end = session.appendMessage(user("range end"));
 		const result = await createContextCheckoutTool(makeApi(session)).execute(
@@ -118,13 +186,13 @@ describe("context_checkout", () => {
 
 		const summary = session.getEntry(result.details?.summaryEntryId ?? "");
 		expect(summary?.type).toBe("branch_summary");
-		expect(summary?.parentId).toBe(before);
+		expect(summary?.parentId).toBe(anchor);
 		expect(session.getLabel(end)).toBeUndefined();
 		expect(result.details?.backupTagApplied).toBeUndefined();
 		expect(result.details?.range).toMatchObject({
 			startId: start,
 			endId: end,
-			parentId: before,
+			parentId: anchor,
 			entryIds: [start, end],
 		});
 		expect(result.details?.range?.topic).toBeUndefined();
@@ -160,6 +228,8 @@ describe("context_checkout", () => {
 	it("preserves suffix entries when range end is not current HEAD", async () => {
 		const session = SessionManager.inMemory();
 		const before = session.appendMessage(user("keep before"));
+		session.appendLabelChange(before, "suffix-anchor");
+		const anchor = session.getLeafId();
 		const start = session.appendMessage(user("range start"));
 		const end = session.appendMessage(user("range end"));
 		const suffix = session.appendMessage(user("later message"));
@@ -179,7 +249,7 @@ describe("context_checkout", () => {
 
 		const summary = session.getEntry(result.details?.summaryEntryId ?? "");
 		expect(summary?.type).toBe("branch_summary");
-		expect(summary?.parentId).toBe(before);
+		expect(summary?.parentId).toBe(anchor);
 		expect(result.details?.range?.entryIds).toEqual([start, end]);
 		expect(result.details?.range?.suffixEntryIds).toEqual([suffix]);
 		const branch = session.getBranch();
@@ -213,6 +283,8 @@ describe("context_checkout", () => {
 		const phases = [{ name: "Implementation", tasks: [{ content: "finish checkout", status: "pending" as const }] }];
 		const session = SessionManager.inMemory();
 		const before = session.appendMessage(user("keep before"));
+		session.appendLabelChange(before, "todo-anchor");
+		const anchor = session.getLeafId();
 		const start = session.appendMessage(user("range start"));
 		const todo = session.appendMessage(todoPhasesMessage(phases));
 
@@ -231,7 +303,7 @@ describe("context_checkout", () => {
 
 		const summary = session.getEntry(result.details?.summaryEntryId ?? "");
 		expect(summary?.type).toBe("branch_summary");
-		expect(summary?.parentId).toBe(before);
+		expect(summary?.parentId).toBe(anchor);
 		expect(result.details?.openTodos).toEqual(phases);
 		expect(getLatestTodoPhasesFromEntries(session.getBranch())).toEqual(phases);
 	});
@@ -348,6 +420,42 @@ describe("context_checkout", () => {
 		expect(session.getLabel(leaf)).toBeUndefined();
 		expect(peekPending(session.getSessionId())).toBeUndefined();
 		expect(session.getBranch().some(entry => entry.type === "branch_summary")).toBe(false);
+	});
+
+	it("clears stale pending checkout when a later checkout attempt fails validation", async () => {
+		const session = SessionManager.inMemory();
+		const target = session.appendMessage(user("start"));
+		const leaf = session.appendMessage(user("work"));
+		const tool = createContextCheckoutTool(makeApi(session));
+		const staged = await tool.execute(
+			"call",
+			{
+				target,
+				message:
+					"Objective: staged\nReason: staged\nFiles Touched: none\nUser Constraints: none\nCurrent Artifact: none\nNext Step: continue.",
+			},
+			undefined,
+			undefined,
+			makeContext(session),
+		);
+		expect(peekPending(session.getSessionId())?.summaryEntryId).toBe(staged.details?.summaryEntryId);
+
+		let error: unknown;
+		try {
+			await tool.execute(
+				"call",
+				{ target, message: "Status: missing required fields", backupTag: "should-not-exist" },
+				undefined,
+				undefined,
+				makeContext(session),
+			);
+		} catch (err) {
+			error = err;
+		}
+
+		expect(error).toBeInstanceOf(Error);
+		expect(peekPending(session.getSessionId())).toBeUndefined();
+		expect(session.getLabel(leaf)).toBeUndefined();
 	});
 
 	it("stages recover mode to a known tag without creating a summary", async () => {

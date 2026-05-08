@@ -280,6 +280,7 @@ export class ExtensionRunner {
 		"ctrl+p",
 		"ctrl+l",
 		"ctrl+o",
+		"alt+o",
 		"ctrl+t",
 		"ctrl+g",
 		"shift+tab",

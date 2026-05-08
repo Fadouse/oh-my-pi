@@ -110,11 +110,8 @@ export const createContextManagementExtensionWithSettings = (
 
 function formatCheckoutNotification(pending: PendingCheckout): string {
 	const targetSuffix = pending.rawTarget === pending.targetId ? "" : ` (${pending.targetId})`;
-	return [
-		`Checked out ${pending.rawTarget}${targetSuffix}`,
-		`Backup tag created: ${pending.backupTagApplied ?? "none"}`,
-		`message: ${pending.enrichedMessage}`,
-	].join("\n");
+	const backup = pending.backupTagApplied ? `; backup: ${pending.backupTagApplied}` : "";
+	return `Checked out ${pending.rawTarget}${targetSuffix} from ${pending.origin}${backup}. Summary block added to transcript.`;
 }
 
 function appendContextManagementSystemPrompt(systemPrompt: string[]): string[] {
