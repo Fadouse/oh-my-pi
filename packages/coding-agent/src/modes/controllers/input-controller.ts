@@ -15,7 +15,6 @@ import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { ensureSupportedImageInput } from "../../utils/image-loading";
 import { resizeImage } from "../../utils/image-resize";
 import { generateSessionTitle, setSessionTerminalTitle } from "../../utils/title-generator";
-
 import { BranchSummaryMessageComponent } from "../components/branch-summary-message";
 
 interface Expandable {
@@ -703,12 +702,7 @@ export class InputController {
 				child.setExpanded(expanded);
 			}
 		}
-		// Expansion can change the height of historical components anywhere in the
-		// chat, including above the visible viewport. A differential render can then
-		// anchor the changed lines at the wrong screen row or leave stale rows behind
-		// when collapsing; force a viewport redraw so expanded checkout ranges appear
-		// at their real position without deleting earlier transcript scrollback.
-		this.ctx.ui.requestRender({ force: true, clearScrollback: false });
+		this.ctx.ui.requestRender();
 	}
 
 	toggleCheckoutTranscriptExpansion(): void {
@@ -718,11 +712,8 @@ export class InputController {
 				child.setExpanded(this.ctx.checkoutTranscriptExpanded);
 			}
 		}
-		// Checkout summaries can expand into the archived transcript, changing the
-		// height of historical content above the viewport. Force a redraw while
-		// preserving scrollback so the TUI does not leave stale collapsed rows behind.
 		this.ctx.chatContainer.invalidate();
-		this.ctx.ui.requestRender({ force: true, clearScrollback: false });
+		this.ctx.ui.requestRender();
 	}
 
 	toggleThinkingBlockVisibility(): void {

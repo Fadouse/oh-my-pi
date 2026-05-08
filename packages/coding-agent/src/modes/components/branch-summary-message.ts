@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { Box, type Component, Container, Markdown, Spacer, Text } from "@oh-my-pi/pi-tui";
+import { Box, Markdown, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { settings } from "../../config/settings";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
@@ -25,31 +25,21 @@ type CheckoutSummaryDetails = {
 		startRef?: string;
 		endRef?: string;
 		entryIds?: string[];
-		suffixEntryIds?: string[];
-		replayedSuffixEntryIds?: string[];
 	};
 };
 
-type RenderTarget = {
-	addChild(component: Component): void;
-};
-
-/**
- * Component that renders a branch summary message with collapsed/expanded state.
- * ACM checkout summaries get a richer audit block and can reveal the original
- * messages that were replaced by the summary.
- */
-export class BranchSummaryMessageComponent extends Container {
+/** Component that renders branch summaries, including ACM checkout summaries. */
+export class BranchSummaryMessageComponent extends Box {
 	#expanded = false;
 
 	constructor(
 		private readonly message: BranchSummaryMessage,
 		private readonly ctx?: Pick<
 			InteractiveModeContext,
-			"agent" | "hideThinkingBlock" | "keybindings" | "session" | "sessionManager" | "toolOutputExpanded" | "ui"
+			"agent" | "hideThinkingBlock" | "keybindings" | "sessionManager" | "ui"
 		>,
 	) {
-		super();
+		super(1, 1, t => theme.bg("customMessageBg", t));
 		this.#updateDisplay();
 	}
 
@@ -66,7 +56,7 @@ export class BranchSummaryMessageComponent extends Container {
 	#updateDisplay(): void {
 		this.clear();
 		const details = getCheckoutDetails(this.message.details);
-		if (details?.source === "context_checkout") {
+		if (details) {
 			this.#renderCheckout(details);
 			return;
 		}
@@ -74,21 +64,19 @@ export class BranchSummaryMessageComponent extends Container {
 	}
 
 	#renderPlainBranch(): void {
-		const box = new Box(1, 1, t => theme.bg("customMessageBg", t));
 		const label = theme.fg("customMessageLabel", theme.bold("[branch]"));
-		box.addChild(new Text(label, 0, 0));
-		box.addChild(new Spacer(1));
+		this.addChild(new Text(label, 0, 0));
+		this.addChild(new Spacer(1));
 		if (this.#expanded) {
 			const header = "**Branch Summary**\n\n";
-			box.addChild(
+			this.addChild(
 				new Markdown(header + this.message.summary, 0, 0, getMarkdownTheme(), {
 					color: (text: string) => theme.fg("customMessageText", text),
 				}),
 			);
 		} else {
-			box.addChild(new Text(theme.fg("customMessageText", "Branch summary (ctrl+o to expand)"), 0, 0));
+			this.addChild(new Text(theme.fg("customMessageText", "Branch summary (ctrl+o to expand)"), 0, 0));
 		}
-		this.addChild(box);
 	}
 
 	#renderCheckout(details: CheckoutSummaryDetails): void {
@@ -96,16 +84,14 @@ export class BranchSummaryMessageComponent extends Container {
 		const muted = (value: string) => theme.fg("muted", value);
 		const summary = parseSummary(this.message.summary);
 		const range = details.range;
-		const title = range?.topic ?? summary.objective ?? "context checkout";
 		const rangeText = range
 			? `${range.startRef ?? shortId(range.startId)}..${range.endRef ?? shortId(range.endId)}`
 			: (details.target ?? "unknown range");
 		const count = range?.entryIds?.length;
 		const backup = details.backupTag ? ` backup: ${details.backupTag}` : "";
 
-		const box = new Box(1, 1, t => theme.bg("customMessageBg", t));
-		box.addChild(new DynamicBorder(text => theme.fg("accent", text)));
-		box.addChild(
+		this.addChild(new DynamicBorder(text => theme.fg("accent", text)));
+		this.addChild(
 			new Text(
 				[
 					accent(theme.bold("context checkout")),
@@ -119,11 +105,13 @@ export class BranchSummaryMessageComponent extends Container {
 				0,
 			),
 		);
-		box.addChild(new Text(theme.fg("customMessageText", title), 1, 0));
+		this.addChild(
+			new Text(theme.fg("customMessageText", range?.topic ?? summary.objective ?? "context checkout"), 1, 0),
+		);
 		if (summary.nextStep) {
-			box.addChild(new Text(`${muted("next ")}${theme.fg("customMessageText", summary.nextStep)}`, 1, 0));
+			this.addChild(new Text(`${muted("next ")}${theme.fg("customMessageText", summary.nextStep)}`, 1, 0));
 		}
-		box.addChild(
+		this.addChild(
 			new Text(
 				muted(
 					this.#expanded
@@ -134,67 +122,58 @@ export class BranchSummaryMessageComponent extends Container {
 				0,
 			),
 		);
-
 		if (this.#expanded) {
-			box.addChild(new Spacer(1));
-			box.addChild(
+			this.addChild(new Spacer(1));
+			this.addChild(
 				new Markdown(this.message.summary, 1, 0, getMarkdownTheme(), {
 					color: (text: string) => theme.fg("customMessageText", text),
 				}),
 			);
+			this.#renderOriginalMessages(rangeText);
 		}
-		if (this.#expanded) {
-			this.#renderOriginalMessages(rangeText, box);
-		}
-		box.addChild(new DynamicBorder(text => theme.fg("accent", text)));
-		this.addChild(box);
+		this.addChild(new DynamicBorder(text => theme.fg("accent", text)));
 	}
 
 	#checkoutExpandKey(): string {
-		return this.ctx?.keybindings ? appKey(this.ctx.keybindings, "app.checkout.expand") : "alt+o";
+		return this.ctx?.keybindings ? appKey(this.ctx.keybindings, "app.checkout.expand") : "ctrl+y";
 	}
 
 	#hideThinkingBlock(): boolean {
 		return this.ctx?.hideThinkingBlock ?? settings.get("hideThinkingBlock");
 	}
 
-	#renderOriginalMessages(rangeText: string, target: RenderTarget): void {
+	#renderOriginalMessages(rangeText: string): void {
 		const originalMessages = this.message.originalMessages ?? [];
+		this.addChild(new Spacer(1));
 		if (originalMessages.length === 0) {
-			target.addChild(new Spacer(1));
-			target.addChild(
+			this.addChild(
 				new Text(theme.fg("muted", "Original checkout messages are not available in this summary."), 1, 0),
 			);
 			return;
 		}
-		target.addChild(new Spacer(1));
-		target.addChild(new Text(theme.fg("accent", theme.bold(`checkout original history start ${rangeText}`)), 1, 0));
+		this.addChild(new Text(theme.fg("accent", theme.bold(`checkout original history start ${rangeText}`)), 1, 0));
 		const pendingTools = new Map<string, ToolExecutionHandle>();
 		for (const original of originalMessages) {
-			this.#addOriginalMessage(original, pendingTools, target);
+			this.#addOriginalMessage(original, pendingTools);
 		}
-		target.addChild(new Text(theme.fg("accent", theme.bold(`checkout original history end ${rangeText}`)), 1, 0));
+		this.addChild(new Text(theme.fg("accent", theme.bold(`checkout original history end ${rangeText}`)), 1, 0));
 	}
 
-	#addOriginalMessage(
-		message: AgentMessage,
-		pendingTools: Map<string, ToolExecutionHandle>,
-		target: RenderTarget,
-	): void {
+	#addOriginalMessage(message: AgentMessage, pendingTools: Map<string, ToolExecutionHandle>): void {
 		switch (message.role) {
 			case "user":
 			case "developer": {
 				const text = getUserText(message);
 				if (text)
-					target.addChild(
+					this.addChild(
 						new UserMessageComponent(text, message.role === "developer" ? true : (message.synthetic ?? false)),
 					);
 				break;
 			}
 			case "assistant": {
 				const assistantComponent = new AssistantMessageComponent(message, this.#hideThinkingBlock());
-				target.addChild(assistantComponent);
-				this.#addToolCalls(message, pendingTools, target);
+				this.addChild(assistantComponent);
+				this.#addToolCalls(message, pendingTools);
 				break;
 			}
 			case "toolResult": {
@@ -202,8 +181,6 @@ export class BranchSummaryMessageComponent extends Container {
 				if (component) {
 					component.updateResult({ content: message.content, details: message.details, isError: message.isError });
 					pendingTools.delete(message.toolCallId);
-				} else {
-					target.addChild(new Text(theme.fg("toolOutput", `[tool result: ${message.toolName}]`), 1, 0));
 				}
 				break;
 			}
@@ -213,7 +190,7 @@ export class BranchSummaryMessageComponent extends Container {
 				if (message.output) component.appendOutput(message.output);
 				component.setComplete(message.exitCode, message.cancelled, { truncation: message.meta?.truncation });
 				component.setExpanded(this.#expanded);
-				target.addChild(component);
+				this.addChild(component);
 				break;
 			}
 			case "pythonExecution": {
@@ -222,7 +199,7 @@ export class BranchSummaryMessageComponent extends Container {
 				if (message.output) component.appendOutput(message.output);
 				component.setComplete(message.exitCode, message.cancelled, { truncation: message.meta?.truncation });
 				component.setExpanded(this.#expanded);
-				target.addChild(component);
+				this.addChild(component);
 				break;
 			}
 			case "custom":
@@ -230,16 +207,12 @@ export class BranchSummaryMessageComponent extends Container {
 			case "fileMention":
 			case "branchSummary":
 			case "compactionSummary":
-				target.addChild(new Text(theme.fg("muted", `[${message.role}]`), 1, 0));
+				this.addChild(new Text(theme.fg("muted", `[${message.role}]`), 1, 0));
 				break;
 		}
 	}
 
-	#addToolCalls(
-		message: AssistantMessage,
-		pendingTools: Map<string, ToolExecutionHandle>,
-		target: RenderTarget,
-	): void {
+	#addToolCalls(message: AssistantMessage, pendingTools: Map<string, ToolExecutionHandle>): void {
 		if (!this.ctx) return;
 		for (const content of message.content) {
 			if (content.type !== "toolCall") continue;
@@ -255,7 +228,7 @@ export class BranchSummaryMessageComponent extends Container {
 			);
 			component.setArgsComplete(content.id);
 			component.setExpanded(this.#expanded);
-			target.addChild(component);
+			this.addChild(component);
 			pendingTools.set(content.id, component);
 		}
 	}

@@ -8,7 +8,7 @@ describe("buildHotkeysMarkdown", () => {
 			"app.clipboard.copyPrompt": "Ctrl+Shift+P",
 			"app.plan.toggle": "Alt+M",
 			"app.tools.expand": "Ctrl+O",
-			"app.checkout.expand": "Alt+O",
+			"app.checkout.expand": "Ctrl+Y",
 			"app.interrupt": "Esc",
 			"app.clear": "Ctrl+C",
 			"app.exit": "Ctrl+D",
@@ -38,7 +38,7 @@ describe("buildHotkeysMarkdown", () => {
 		expect(markdown).toContain("| `Ctrl+Shift+L` | Select model (temporary) |");
 		expect(markdown).toContain("| `Ctrl+L` | Select model (set roles) |");
 		expect(markdown).toContain("| `Alt+M` | Toggle plan mode |");
-		expect(markdown).toContain("| `Alt+O` | Toggle checkout transcript expansion |");
+		expect(markdown).toContain("| `Ctrl+Y` | Toggle checkout transcript expansion |");
 		expect(markdown).toContain("| `#` | Open prompt actions |");
 		for (const line of lines) {
 			if (line.length === 0) continue;

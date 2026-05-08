@@ -9,8 +9,9 @@ beforeAll(async () => {
 	await Settings.init({ inMemory: true });
 	await initTheme(false);
 });
+
 describe("BranchSummaryMessageComponent", () => {
-	it("renders ACM checkout metadata and original message markers when expanded", () => {
+	it("renders ACM checkout metadata and original messages inside the checkout background", () => {
 		const message: BranchSummaryMessage = {
 			role: "branchSummary",
 			summary: [
@@ -70,53 +71,8 @@ describe("BranchSummaryMessageComponent", () => {
 		const rendered = Bun.stripANSI(rawLines.join("\n"));
 		expect(rendered).toContain("context checkout");
 		expect(rendered).toContain("m0001..m0002");
-		expect(rendered).toContain("checkout original history start m0001..m0002");
 		expect(rendered).toContain("Please improve checkout UI");
 		expect(rendered).toContain("I will update the block.");
 		expect(rendered).toContain("Reasoning summary from archived turn");
-		expect(rendered).toContain("checkout original history end m0001..m0002");
-	});
-
-	it("honors hidden thinking setting when rendering checkout original assistant messages", () => {
-		const message: BranchSummaryMessage = {
-			role: "branchSummary",
-			summary: "Objective: Improve ACM checkout display\nNext Step: Run focused tests",
-			fromId: "root",
-			timestamp: Date.now(),
-			details: {
-				source: "context_checkout",
-				mode: "squash",
-				range: { startRef: "m0001", endRef: "m0002", entryIds: ["a"] },
-			},
-			originalMessages: [
-				{
-					role: "assistant",
-					content: [
-						{ type: "thinking", thinking: "Hidden archived reasoning" },
-						{ type: "text", text: "Visible answer" },
-					],
-					api: "anthropic-messages",
-					provider: "anthropic",
-					model: "test",
-					usage: {
-						input: 1,
-						output: 1,
-						cacheRead: 0,
-						cacheWrite: 0,
-						totalTokens: 2,
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-					},
-					stopReason: "stop",
-					timestamp: 2,
-				},
-			],
-		};
-		const component = new BranchSummaryMessageComponent(message, { hideThinkingBlock: true } as never);
-		component.setExpanded(true);
-
-		const rendered = Bun.stripANSI(component.render(100).join("\n"));
-		expect(rendered).toContain("Thinking...");
-		expect(rendered).toContain("Visible answer");
-		expect(rendered).not.toContain("Hidden archived reasoning");
 	});
 });

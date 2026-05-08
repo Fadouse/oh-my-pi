@@ -197,7 +197,6 @@ export class ExtensionRunner {
 		this.runtime.sendMessage = actions.sendMessage;
 		this.runtime.sendUserMessage = actions.sendUserMessage;
 		this.runtime.appendEntry = actions.appendEntry;
-		this.runtime.setLabel = actions.setLabel;
 		this.runtime.getActiveTools = actions.getActiveTools;
 		this.runtime.getAllTools = actions.getAllTools;
 		this.runtime.setActiveTools = actions.setActiveTools;
@@ -280,7 +279,7 @@ export class ExtensionRunner {
 		"ctrl+p",
 		"ctrl+l",
 		"ctrl+o",
-		"alt+o",
+		"ctrl+y",
 		"ctrl+t",
 		"ctrl+g",
 		"shift+tab",

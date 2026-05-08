@@ -201,17 +201,15 @@ export class ExtensionUiController {
 					return { cancelled: true };
 				}
 
-				// Update UI. Tree navigation rewrites the visible transcript; force a
-				// viewport redraw after rebuilding so stale pre-checkout rows do not
-				// remain until the user manually refreshes the TUI.
+				// Update UI
 				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages(result.sessionContext);
+				this.ctx.renderInitialMessages();
 				await this.ctx.reloadTodos();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setText(result.editorText);
 				}
 				this.ctx.showStatus("Navigated to selected point");
-				this.ctx.ui.requestRender({ force: true, clearScrollback: false });
+
 				return { cancelled: false };
 			},
 			compact: async instructionsOrOptions => this.#handleInteractiveCompact(instructionsOrOptions),
@@ -445,17 +443,15 @@ export class ExtensionUiController {
 					return { cancelled: true };
 				}
 
-				// Update UI. Tree navigation rewrites the visible transcript; force a
-				// viewport redraw after rebuilding so stale pre-checkout rows do not
-				// remain until the user manually refreshes the TUI.
+				// Update UI
 				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages(result.sessionContext);
+				this.ctx.renderInitialMessages();
 				await this.ctx.reloadTodos();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setText(result.editorText);
 				}
 				this.ctx.showStatus("Navigated to selected point");
-				this.ctx.ui.requestRender({ force: true, clearScrollback: false });
+
 				return { cancelled: false };
 			},
 			compact: async instructionsOrOptions => this.#handleInteractiveCompact(instructionsOrOptions),

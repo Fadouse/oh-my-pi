@@ -37,16 +37,13 @@ function branchSummary(): BranchSummaryMessage {
 	};
 }
 
-function createController(
-	chatContainer: Container,
-	renderCalls: Array<boolean | { force?: boolean; clearScrollback?: boolean }>,
-): InputController {
+function createController(chatContainer: Container, renderCalls: boolean[]): InputController {
 	return new InputController({
 		toolOutputExpanded: false,
 		checkoutTranscriptExpanded: false,
 		chatContainer,
 		ui: {
-			requestRender(options?: boolean | { force?: boolean; clearScrollback?: boolean }): void {
+			requestRender(options?: boolean): void {
 				renderCalls.push(options ?? false);
 			},
 		},
@@ -58,67 +55,38 @@ beforeAll(async () => {
 	await Settings.init({ inMemory: true });
 	await initTheme(false);
 });
-describe("InputController tool output expansion", () => {
-	it("forces a full redraw after toggling historical expandable blocks", () => {
+
+describe("InputController checkout expansion", () => {
+	it("keeps checkout summaries out of the general tool-output shortcut", () => {
 		const chatContainer = new Container();
 		const expandable = new ExpandableProbe();
+		const checkout = new BranchSummaryMessageComponent(branchSummary());
+		const checkoutCalls: boolean[] = [];
+		checkout.setExpanded = (expanded: boolean) => checkoutCalls.push(expanded);
 		chatContainer.addChild(expandable);
-		const renderCalls: Array<boolean | { force?: boolean; clearScrollback?: boolean }> = [];
+		chatContainer.addChild(checkout);
+		const renderCalls: boolean[] = [];
 		const controller = createController(chatContainer, renderCalls);
 
 		controller.setToolsExpanded(true);
 
 		expect(expandable.calls).toEqual([true]);
-		expect(renderCalls).toEqual([{ force: true, clearScrollback: false }]);
-	});
-
-	it("does not expand checkout summaries with the general tool-output shortcut", () => {
-		const chatContainer = new Container();
-		const checkout = new BranchSummaryMessageComponent(branchSummary());
-		const calls: boolean[] = [];
-		checkout.setExpanded = (expanded: boolean) => {
-			calls.push(expanded);
-		};
-		chatContainer.addChild(checkout);
-		const renderCalls: Array<boolean | { force?: boolean; clearScrollback?: boolean }> = [];
-		const controller = createController(chatContainer, renderCalls);
-
-		controller.setToolsExpanded(true);
-
-		expect(calls).toEqual([]);
-		expect(renderCalls).toEqual([{ force: true, clearScrollback: false }]);
+		expect(checkoutCalls).toEqual([]);
+		expect(renderCalls).toEqual([false]);
 	});
 
 	it("expands checkout summaries with the dedicated checkout transcript shortcut", () => {
 		const chatContainer = new Container();
 		const checkout = new BranchSummaryMessageComponent(branchSummary());
 		const calls: boolean[] = [];
-		checkout.setExpanded = (expanded: boolean) => {
-			calls.push(expanded);
-		};
+		checkout.setExpanded = (expanded: boolean) => calls.push(expanded);
 		chatContainer.addChild(checkout);
-		const renderCalls: Array<boolean | { force?: boolean; clearScrollback?: boolean }> = [];
+		const renderCalls: boolean[] = [];
 		const controller = createController(chatContainer, renderCalls);
 
 		controller.toggleCheckoutTranscriptExpansion();
 
 		expect(calls).toEqual([true]);
-		expect(renderCalls).toEqual([{ force: true, clearScrollback: false }]);
-	});
-
-	it("forces a redraw after checkout transcript expansion changes historical height", () => {
-		const chatContainer = new Container();
-		const checkout = new BranchSummaryMessageComponent(branchSummary());
-		chatContainer.addChild(checkout);
-		const renderCalls: Array<boolean | { force?: boolean; clearScrollback?: boolean }> = [];
-		const controller = createController(chatContainer, renderCalls);
-
-		const before = Bun.stripANSI(chatContainer.render(100).join("\n"));
-		controller.toggleCheckoutTranscriptExpansion();
-		const after = Bun.stripANSI(chatContainer.render(100).join("\n"));
-
-		expect(after).not.toBe(before);
-		expect(after).toContain("Expanded checkout");
-		expect(renderCalls).toEqual([{ force: true, clearScrollback: false }]);
+		expect(renderCalls).toEqual([false]);
 	});
 });

@@ -107,7 +107,7 @@ export const KEYBINDINGS = {
 		description: "Expand tools",
 	},
 	"app.checkout.expand": {
-		defaultKeys: "alt+o",
+		defaultKeys: "ctrl+y",
 		description: "Expand checkout transcript",
 	},
 	"app.editor.external": {
