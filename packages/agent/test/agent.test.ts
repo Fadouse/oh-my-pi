@@ -323,16 +323,19 @@ describe("Agent", () => {
 		]);
 	});
 
-	it("forwards sessionId and thinkingBudgets to streamFn options", async () => {
+	it("forwards sessionId, querySource, and thinkingBudgets to streamFn options", async () => {
 		let receivedSessionId: string | undefined;
 		let receivedBudgets: ThinkingBudgets | undefined;
+		let receivedQuerySource: string | undefined;
 
 		const agent = new Agent({
 			sessionId: "session-abc",
+			querySource: "repl_main_thread",
 			thinkingBudgets: { minimal: 64, low: 256 },
 			streamFn: (_model, _context, options) => {
 				receivedSessionId = options?.sessionId;
 				receivedBudgets = options?.thinkingBudgets;
+				receivedQuerySource = options?.querySource;
 				const stream = new MockAssistantStream();
 				queueMicrotask(() => {
 					const message = createAssistantMessage([{ type: "text", text: "ok" }]);
@@ -345,13 +348,16 @@ describe("Agent", () => {
 		await agent.prompt("hello");
 		expect(receivedSessionId).toBe("session-abc");
 		expect(receivedBudgets).toEqual({ minimal: 64, low: 256 });
+		expect(receivedQuerySource).toBe("repl_main_thread");
 
 		agent.sessionId = "session-def";
 		agent.thinkingBudgets = { medium: 512 };
+		agent.querySource = "agent:Worker";
 
 		await agent.prompt("hello again");
 		expect(receivedSessionId).toBe("session-def");
 		expect(receivedBudgets).toEqual({ medium: 512 });
+		expect(receivedQuerySource).toBe("agent:Worker");
 	});
 
 	it("forwards onPayload to streamFn options", async () => {

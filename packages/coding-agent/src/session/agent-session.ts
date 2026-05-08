@@ -2291,7 +2291,11 @@ export class AgentSession {
 		const mode = this.#resolveEffectiveDiscoveryMode();
 		const activeNames = new Set(this.getActiveToolNames());
 		const mcpTools: DiscoverableTool[] = Array.from(this.#discoverableMCPTools.values())
-			.filter(t => !activeNames.has(t.name))
+			.filter(t => {
+				const tool = this.#toolRegistry.get(t.name);
+				const deferred = tool?.deferLoading === true || tool?.defer_loading === true;
+				return deferred || !activeNames.has(t.name);
+			})
 			.map(t => ({
 				name: t.name,
 				label: t.label,
@@ -6614,6 +6618,7 @@ export class AgentSession {
 			serviceTier: this.serviceTier,
 			signal: args.signal,
 			toolChoice: "none",
+			skipCacheWrite: true,
 		});
 
 		let replyText = "";

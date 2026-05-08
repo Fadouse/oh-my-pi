@@ -4,6 +4,7 @@
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
+	type CacheRetention,
 	type CursorExecHandlers,
 	type CursorToolResultHandler,
 	type Effort,
@@ -116,6 +117,14 @@ export interface AgentOptions {
 	 * Used by providers that support session-based caching (e.g., OpenAI Codex).
 	 */
 	sessionId?: string;
+	/**
+	 * Claude Code query source forwarded to Anthropic cache-policy gates.
+	 */
+	querySource?: string;
+	/**
+	 * Prompt-cache retention preference forwarded to providers.
+	 */
+	cacheRetention?: CacheRetention;
 	/**
 	 * Shared provider state map for session-scoped transport/session caches.
 	 */
@@ -233,6 +242,7 @@ export class Agent {
 	#followUpMode: "all" | "one-at-a-time";
 	#interruptMode: "immediate" | "wait";
 	#sessionId?: string;
+	#querySource?: string;
 	#providerSessionState?: Map<string, ProviderSessionState>;
 	#thinkingBudgets?: ThinkingBudgets;
 	#temperature?: number;
@@ -242,6 +252,7 @@ export class Agent {
 	#presencePenalty?: number;
 	#repetitionPenalty?: number;
 	#serviceTier?: ServiceTier;
+	#cacheRetention?: CacheRetention;
 	#hideThinkingSummary?: boolean;
 	#maxRetryDelayMs?: number;
 	#getToolContext?: (toolCall?: ToolCallContext) => AgentToolContext | undefined;
@@ -273,6 +284,8 @@ export class Agent {
 		this.#interruptMode = opts.interruptMode || "immediate";
 		this.streamFn = opts.streamFn || streamSimple;
 		this.#sessionId = opts.sessionId;
+		this.#querySource = opts.querySource;
+		this.#cacheRetention = opts.cacheRetention;
 		this.#providerSessionState = opts.providerSessionState;
 		this.#thinkingBudgets = opts.thinkingBudgets;
 		this.#temperature = opts.temperature;
@@ -314,6 +327,20 @@ export class Agent {
 	}
 
 	/**
+	 * Get the Claude Code query source used for provider cache-policy gates.
+	 */
+	get querySource(): string | undefined {
+		return this.#querySource;
+	}
+
+	/**
+	 * Set the Claude Code query source used for provider cache-policy gates.
+	 */
+	set querySource(value: string | undefined) {
+		this.#querySource = value;
+	}
+
+	/**
 	 * Get provider-scoped mutable session state store.
 	 */
 	get providerSessionState(): Map<string, ProviderSessionState> | undefined {
@@ -325,6 +352,20 @@ export class Agent {
 	 */
 	set providerSessionState(value: Map<string, ProviderSessionState> | undefined) {
 		this.#providerSessionState = value;
+	}
+
+	/**
+	 * Get the prompt-cache retention preference forwarded to providers.
+	 */
+	get cacheRetention(): CacheRetention | undefined {
+		return this.#cacheRetention;
+	}
+
+	/**
+	 * Set prompt-cache retention for future provider calls.
+	 */
+	set cacheRetention(value: CacheRetention | undefined) {
+		this.#cacheRetention = value;
 	}
 
 	/**
@@ -777,6 +818,8 @@ export class Agent {
 			hideThinkingSummary: this.#hideThinkingSummary,
 			interruptMode: this.#interruptMode,
 			sessionId: this.#sessionId,
+			querySource: this.#querySource,
+			cacheRetention: this.#cacheRetention,
 			providerSessionState: this.#providerSessionState,
 			thinkingBudgets: this.#thinkingBudgets,
 			maxRetryDelayMs: this.#maxRetryDelayMs,

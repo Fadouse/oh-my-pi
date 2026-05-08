@@ -4,6 +4,7 @@
 
 import * as os from "node:os";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "@oh-my-pi/pi-ai";
 import { FileType, glob } from "@oh-my-pi/pi-natives";
 import { $env, getGpuCachePath, getProjectDir, hasFsCode, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
@@ -420,6 +421,16 @@ export interface BuildSystemPromptResult {
 	/** Ordered system prompt blocks. Providers should preserve entries as distinct messages/blocks. */
 	systemPrompt: string[];
 }
+function splitDefaultSystemPromptForGlobalCache(rendered: string): string[] {
+	const environmentBoundary = "\n\n═══════════Environment═══════════\n";
+	const boundaryIndex = rendered.indexOf(environmentBoundary);
+	if (boundaryIndex <= 0) {
+		return [rendered];
+	}
+	const staticPrefix = rendered.slice(0, boundaryIndex).trim();
+	const dynamicSuffix = rendered.slice(boundaryIndex).trim();
+	return [staticPrefix, SYSTEM_PROMPT_DYNAMIC_BOUNDARY, dynamicSuffix].filter(block => block.length > 0);
+}
 
 /** Build the system prompt with tools, guidelines, and context */
 export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}): Promise<BuildSystemPromptResult> {
@@ -640,7 +651,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		rendered += `\n\n<critical>\nThe \`${reportToolIssueToolName}\` tool is available for automated QA. If ANY tool you call returns output that is unexpected, incorrect, malformed, or otherwise inconsistent with what you anticipated given the tool's described behavior and your parameters, call \`${reportToolIssueToolName}\` with the tool name and a concise description of the discrepancy. Do not hesitate to report — false positives are acceptable.\n</critical>`;
 	}
 
-	const systemPrompt = [rendered];
+	const systemPrompt = resolvedCustomPrompt ? [rendered] : splitDefaultSystemPromptForGlobalCache(rendered);
 	const projectPrompt = resolvedCustomPrompt ? "" : prompt.render(projectPromptTemplate, data).trim();
 	if (projectPrompt) {
 		systemPrompt.push(projectPrompt);

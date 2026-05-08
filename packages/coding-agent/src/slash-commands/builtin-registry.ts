@@ -178,6 +178,39 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<BuiltinSlashCommandSpec> = [
 		},
 	},
 	{
+		name: "cache",
+		description: "Set Anthropic prompt-cache TTL for this session",
+		subcommands: [
+			{ name: "5m", description: "Use default 5-minute prompt-cache writes" },
+			{ name: "1h", description: "Use 1-hour prompt-cache writes" },
+			{ name: "status", description: "Show current prompt-cache TTL" },
+		],
+		allowArgs: true,
+		handle: (command, runtime) => {
+			const arg = command.args.trim().toLowerCase();
+			if (!arg || arg === "status") {
+				const retention = runtime.ctx.agent.cacheRetention;
+				runtime.ctx.showStatus(`Prompt cache TTL is ${retention === "long" ? "1h" : "5m"}.`);
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			if (arg === "1h" || arg === "long") {
+				runtime.ctx.agent.cacheRetention = "long";
+				runtime.ctx.showStatus("Prompt cache TTL set to 1h for this session.");
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			if (arg === "5m" || arg === "short" || arg === "default") {
+				runtime.ctx.agent.cacheRetention = "short";
+				runtime.ctx.showStatus("Prompt cache TTL set to 5m for this session.");
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			runtime.ctx.showStatus("Usage: /cache [5m|1h|status]");
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "export",
 		description: "Export session to HTML file",
 		inlineHint: "[path]",

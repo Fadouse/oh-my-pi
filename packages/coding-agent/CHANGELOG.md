@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `/cache [5m|1h|status]` to switch Anthropic prompt-cache TTL per session; sessions still default to 5 minutes.
+
+### Changed
+
+- Changed MCP discovery mode to use Claude Code-style tool search for deferred MCP tools: deferred MCP schemas stay in the Anthropic request with `defer_loading`, the system prompt omits their full tool entries, and `search_tool_bm25` returns `tool_reference` blocks instead of mutating the active tool set.
+- Changed MCP tool-search deferral to respect Claude Code-style capability gates, falling back to normal discovery when experimental betas, Haiku models, or unsupported Anthropic-compatible proxy settings disable `tool_reference`.
+- Changed MCP tool-search auto mode to use Claude Code-style deferred tool size thresholds and persist discovered MCP tool references across compaction.
+
+### Fixed
+
+- Fixed Anthropic cache-policy query-source propagation so top-level sessions send `repl_main_thread` and subagents send `agent:<id>`.
+
 ## [14.7.6] - 2026-05-07
 ### Changed
 

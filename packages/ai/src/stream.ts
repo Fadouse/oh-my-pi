@@ -448,6 +448,8 @@ function mapOptionsForApi<TApi extends Api>(
 		metadata: options?.metadata,
 		sessionId: options?.sessionId,
 		providerSessionState: options?.providerSessionState,
+		querySource: options?.querySource,
+		useCachedMicrocompact: options?.useCachedMicrocompact,
 		onPayload: options?.onPayload,
 		onResponse: options?.onResponse,
 		execHandlers: options?.execHandlers,

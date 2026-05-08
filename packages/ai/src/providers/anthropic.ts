@@ -8,7 +8,7 @@ import type {
 	MessageParam,
 	RawMessageStreamEvent,
 } from "@anthropic-ai/sdk/resources/messages";
-import { $env, abortableSleep, isEnoent, readSseEvents } from "@oh-my-pi/pi-utils";
+import { $env, abortableSleep, isEnoent, logger, readSseEvents } from "@oh-my-pi/pi-utils";
 import { hasOpus47ApiRestrictions, mapEffortToAnthropicAdaptiveEffort } from "../model-thinking";
 import { calculateCost } from "../models";
 import { getEnvApiKey, OUTPUT_FALLBACK_BUFFER } from "../stream";
@@ -106,6 +106,9 @@ const claudeCodeLongContextBeta = "context-1m-2025-08-07";
 const claudeCodeEffortBeta = "effort-2025-11-24";
 const fineGrainedToolStreamingBeta = "fine-grained-tool-streaming-2025-05-14";
 const interleavedThinkingBeta = "interleaved-thinking-2025-05-14";
+const toolSearchBetaHeader = "advanced-tool-use-2025-11-20";
+const defaultAutoToolSearchPercentage = 10;
+const toolSearchCharsPerToken = 2.5;
 
 function getHeaderCaseInsensitive(headers: Record<string, string> | undefined, headerName: string): string | undefined {
 	if (!headers) return undefined;
@@ -228,11 +231,32 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 	}
 }
 
+export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__";
+
 type AnthropicCacheScope = "global" | "org";
 type AnthropicCacheControl = {
 	type: "ephemeral";
 	ttl?: "1h" | "5m";
 	scope?: AnthropicCacheScope;
+};
+
+export type AnthropicCacheEditsBlock = {
+	type: "cache_edits";
+	edits: Array<{ type: "delete"; cache_reference: string }>;
+};
+
+export type AnthropicPinnedCacheEdits = {
+	userMessageIndex: number;
+	block: AnthropicCacheEditsBlock;
+};
+
+type AnthropicCachePolicy = {
+	enabled: boolean;
+	retention: CacheRetention;
+	ttl?: "1h";
+	supportsScope: boolean;
+	useGlobalSystemCache: boolean;
+	skipGlobalCacheForSystemPrompt: boolean;
 };
 
 type AnthropicSamplingParams = MessageCreateParamsStreaming & {
@@ -248,6 +272,10 @@ function getPromptCachingEnabled(modelId: string): boolean {
 	return true;
 }
 
+function isEnvTruthy(value: string | undefined): boolean {
+	return value?.toLowerCase() === "true" || value === "1";
+}
+
 /**
  * Adaptive thinking `display` is supported starting with Claude Opus 4.7.
  * Older adaptive-thinking models (Opus 4.6, Sonnet 4.6+) reject the field.
@@ -261,16 +289,26 @@ function supportsAdaptiveThinkingDisplay(modelId: string): boolean {
 }
 
 const ANTHROPIC_PROVIDER_SESSION_STATE_KEY = "anthropic-messages";
+type AnthropicCacheDiagnosticsState = {
+	previousHash: string | null;
+	previousCacheReadTokens: number | null;
+};
 
 type AnthropicProviderSessionState = ProviderSessionState & {
 	strictToolsDisabled: boolean;
+	cacheDiagnostics: Map<string, AnthropicCacheDiagnosticsState>;
+	cacheEditingHeaderLatched: boolean;
 };
 
 function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
 	const state: AnthropicProviderSessionState = {
 		strictToolsDisabled: false,
+		cacheDiagnostics: new Map(),
+		cacheEditingHeaderLatched: false,
 		close: () => {
 			state.strictToolsDisabled = false;
+			state.cacheEditingHeaderLatched = false;
+			state.cacheDiagnostics.clear();
 		},
 	};
 	return state;
@@ -311,22 +349,41 @@ function dropAnthropicStrictTools(params: MessageCreateParamsStreaming): void {
 	}
 }
 
-function getCacheControl(
+function getCachePolicy(
 	model: Model<"anthropic-messages">,
 	baseUrl: string,
-	cacheRetention?: CacheRetention,
-): { retention: CacheRetention; cacheControl?: AnthropicCacheControl } {
-	const retention = resolveCacheRetention(cacheRetention);
-	if (retention === "none" || !getPromptCachingEnabled(model.id)) {
-		return { retention };
-	}
+	options?: AnthropicOptions,
+): AnthropicCachePolicy {
+	const retention = resolveCacheRetention(options?.cacheRetention);
+	const enabled = (options?.enablePromptCaching ?? true) && retention !== "none" && getPromptCachingEnabled(model.id);
+	const firstPartyAnthropic = model.provider === "anthropic" && isAnthropicApiBaseUrl(baseUrl);
+	const supportsScope = firstPartyAnthropic && !isEnvTruthy($env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS);
 	const ttl =
-		retention === "long" && isAnthropicApiBaseUrl(baseUrl) && getAnthropicCompat(model).supportsLongCacheRetention
+		enabled &&
+		retention === "long" &&
+		isAnthropicApiBaseUrl(baseUrl) &&
+		getAnthropicCompat(model).supportsLongCacheRetention
 			? "1h"
 			: undefined;
 	return {
+		enabled,
 		retention,
-		cacheControl: { type: "ephemeral", ...(ttl && { ttl }) },
+		...(ttl && { ttl }),
+		supportsScope,
+		useGlobalSystemCache: supportsScope,
+		skipGlobalCacheForSystemPrompt: options?.skipGlobalCacheForSystemPrompt ?? false,
+	};
+}
+
+function createCacheControl(
+	policy: AnthropicCachePolicy,
+	scope?: AnthropicCacheScope,
+): AnthropicCacheControl | undefined {
+	if (!policy.enabled) return undefined;
+	return {
+		type: "ephemeral",
+		...(policy.ttl && { ttl: policy.ttl }),
+		...(scope === "global" && policy.supportsScope && { scope }),
 	};
 }
 
@@ -581,10 +638,15 @@ export const stripClaudeToolPrefix = (name: string, prefixOverride: string = cla
 /**
  * Convert content blocks to Anthropic API format
  */
-function convertContentBlocks(content: (TextContent | ImageContent)[]):
+function convertContentBlocks(
+	content: (TextContent | ImageContent)[],
+	isOAuthToken: boolean,
+	options?: { toolSearchEnabled?: boolean; availableToolNames?: ReadonlySet<string> },
+):
 	| string
 	| Array<
 			| { type: "text"; text: string }
+			| { type: "tool_reference"; tool_name: string }
 			| {
 					type: "image";
 					source: {
@@ -596,7 +658,8 @@ function convertContentBlocks(content: (TextContent | ImageContent)[]):
 	  > {
 	// If only text blocks, return as concatenated string for simplicity
 	const hasImages = content.some(c => c.type === "image");
-	if (!hasImages) {
+	const hasToolReferences = content.some(c => c.type === "text" && typeof c.toolReferenceName === "string");
+	if (!hasImages && !hasToolReferences) {
 		return content
 			.map(c => (c as TextContent).text)
 			.join("\n")
@@ -606,6 +669,24 @@ function convertContentBlocks(content: (TextContent | ImageContent)[]):
 	// If we have images, convert to content block array
 	const blocks = content.map(block => {
 		if (block.type === "text") {
+			if (block.toolReferenceName) {
+				if (options?.toolSearchEnabled !== true) {
+					return {
+						type: "text" as const,
+						text: "[Tool references removed - tool search not enabled]",
+					};
+				}
+				if (options.availableToolNames && !options.availableToolNames.has(block.toolReferenceName)) {
+					return {
+						type: "text" as const,
+						text: "[Tool references removed - tools no longer available]",
+					};
+				}
+				return {
+					type: "tool_reference" as const,
+					tool_name: isOAuthToken ? applyClaudeToolPrefix(block.toolReferenceName) : block.toolReferenceName,
+				};
+			}
 			return {
 				type: "text" as const,
 				text: block.text.toWellFormed(),
@@ -623,7 +704,7 @@ function convertContentBlocks(content: (TextContent | ImageContent)[]):
 
 	// If only images (no text), add placeholder text block
 	const hasText = blocks.some(b => b.type === "text");
-	if (!hasText) {
+	if (!hasText && !hasToolReferences) {
 		blocks.unshift({
 			type: "text" as const,
 			text: "(see attached image)",
@@ -672,6 +753,22 @@ export interface AnthropicOptions extends StreamOptions {
 	interleavedThinking?: boolean;
 	toolChoice?: "auto" | "any" | "none" | { type: "tool"; name: string };
 	betas?: string[] | string;
+	/** Explicitly overrides official prompt-caching enablement for Anthropic request shaping. */
+	enablePromptCaching?: boolean;
+	/** Claude Code query source used by prompt-cache TTL/cache-editing gates. */
+	querySource?: string;
+	/** Force system prompt global-cache splitting off, matching Claude Code's MCP-tool gate. */
+	skipGlobalCacheForSystemPrompt?: boolean;
+	/** Enables Claude Code cached microcompact request shaping when first-party and querySource is repl_main_thread. */
+	useCachedMicrocompact?: boolean;
+	/** New cache_edits block to insert into the last user message for cached microcompact. */
+	newCacheEdits?: AnthropicCacheEditsBlock | null;
+	/** Pinned cache_edits blocks to reinsert at their original user-message indices. */
+	pinnedCacheEdits?: AnthropicPinnedCacheEdits[];
+	/** Called with the original new cache_edits block after it is inserted and should be pinned. */
+	onPinCacheEdits?: (userMessageIndex: number, block: AnthropicCacheEditsBlock) => void;
+	/** Anthropic beta header for cache editing; provided source does not define the private constant. */
+	cacheEditingBetaHeader?: string;
 	/** Force OAuth bearer auth mode for proxy tokens that don't match Anthropic token prefixes. */
 	isOAuth?: boolean;
 	/**
@@ -1024,6 +1121,60 @@ export type AnthropicUsageLike = {
 	server_tool_use?: { web_search_requests?: number | null; web_fetch_requests?: number | null } | null;
 };
 
+const MIN_CACHE_MISS_TOKENS = 2_000;
+
+function computeAnthropicCacheDiagnosticsHash(
+	params: MessageCreateParamsStreaming,
+	model: Model<"anthropic-messages">,
+): string {
+	const diagnosticPayload = {
+		model: model.id,
+		system: params.system,
+		tools: params.tools,
+		tool_choice: params.tool_choice,
+		thinking: params.thinking,
+		output_config: (params as AnthropicSamplingParams).output_config,
+		messages: params.messages.map(message => ({
+			role: message.role,
+			content: Array.isArray(message.content)
+				? message.content.map(block => (typeof block === "object" && block !== null ? block : { value: block }))
+				: message.content,
+		})),
+	};
+	return nodeCrypto.createHash("sha256").update(JSON.stringify(diagnosticPayload)).digest("hex");
+}
+
+function recordAnthropicCacheDiagnostics(args: {
+	state: AnthropicProviderSessionState | undefined;
+	key: string;
+	hash: string | undefined;
+	cacheReadTokens: number;
+	cacheCreationTokens: number;
+	modelId: string;
+}): void {
+	if (!args.state || !args.hash) return;
+	const previous = args.state.cacheDiagnostics.get(args.key) ?? {
+		previousHash: null,
+		previousCacheReadTokens: null,
+	};
+	const previousCacheReadTokens = previous.previousCacheReadTokens;
+	if (previousCacheReadTokens !== null) {
+		const tokenDrop = previousCacheReadTokens - args.cacheReadTokens;
+		if (args.cacheReadTokens < previousCacheReadTokens * 0.95 && tokenDrop >= MIN_CACHE_MISS_TOKENS) {
+			logger.debug("Anthropic prompt cache read dropped", {
+				model: args.modelId,
+				previousCacheReadTokens,
+				cacheReadTokens: args.cacheReadTokens,
+				cacheCreationTokens: args.cacheCreationTokens,
+				requestShapeChanged: previous.previousHash !== args.hash,
+			});
+		}
+	}
+	args.state.cacheDiagnostics.set(args.key, {
+		previousHash: args.hash,
+		previousCacheReadTokens: args.cacheReadTokens,
+	});
+}
 /**
  * Capture Anthropic's optional cache-creation TTL breakdown and server-tool-use
  * counters into the harness Usage shape. Only sets fields that were reported, so
@@ -1090,6 +1241,26 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 		let activeAbortTracker = createAbortSourceTracker(options?.signal);
 
 		try {
+			const apiKey = options?.apiKey ?? getEnvApiKey(model.provider) ?? "";
+			const baseUrl = resolveAnthropicBaseUrl(model, apiKey) ?? "https://api.anthropic.com";
+			const providerSessionState = getAnthropicProviderSessionState(options?.providerSessionState);
+			const isFirstPartyMainThread =
+				isFirstPartyAnthropicRequest(model, baseUrl) && options?.querySource === "repl_main_thread";
+			if (providerSessionState && options?.useCachedMicrocompact === true && isFirstPartyMainThread) {
+				providerSessionState.cacheEditingHeaderLatched = true;
+			}
+			const extraBetas = normalizeExtraBetas(options?.betas);
+			if (
+				providerSessionState?.cacheEditingHeaderLatched &&
+				isFirstPartyMainThread &&
+				options?.cacheEditingBetaHeader
+			) {
+				extraBetas.push(options.cacheEditingBetaHeader);
+			}
+			if (shouldUseAnthropicToolSearch(model, baseUrl, context.tools)) {
+				extraBetas.push(toolSearchBetaHeader);
+			}
+
 			let client: Anthropic;
 			let isOAuthToken: boolean;
 
@@ -1097,12 +1268,10 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 				client = options.client;
 				isOAuthToken = false;
 			} else {
-				const apiKey = options?.apiKey ?? getEnvApiKey(model.provider) ?? "";
-
 				const created = createClient(model, {
 					model,
 					apiKey,
-					extraBetas: normalizeExtraBetas(options?.betas),
+					extraBetas,
 					stream: true,
 					interleavedThinking: options?.interleavedThinking ?? true,
 					headers: options?.headers,
@@ -1114,13 +1283,11 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 				client = created.client;
 				isOAuthToken = created.isOAuthToken;
 			}
-			const baseUrl =
-				resolveAnthropicBaseUrl(model, options?.apiKey ?? getEnvApiKey(model.provider) ?? "") ??
-				"https://api.anthropic.com";
-			const providerSessionState = getAnthropicProviderSessionState(options?.providerSessionState);
 			let disableStrictTools =
 				(providerSessionState?.strictToolsDisabled ?? false) || (model.compat?.disableStrictTools ?? false);
 			let strictFallbackErrorMessage: string | undefined;
+			const cacheDiagnosticsKey = `${model.provider}\u0000${baseUrl}\u0000${model.id}\u0000${options?.sessionId ?? ""}`;
+			let cacheDiagnosticsHash: string | undefined;
 			const prepareParams = async (): Promise<MessageCreateParamsStreaming> => {
 				let nextParams = buildParams(model, baseUrl, context, isOAuthToken, options, disableStrictTools);
 				const replacementPayload = await options?.onPayload?.(nextParams, model);
@@ -1138,6 +1305,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 					url: `${baseUrl}/v1/messages${isOAuthToken ? "?beta=true" : ""}`,
 					body: nextParams,
 				};
+				cacheDiagnosticsHash = computeAnthropicCacheDiagnosticsHash(nextParams, model);
 				return nextParams;
 			};
 			let params = await prepareParams();
@@ -1200,6 +1368,14 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 							output.usage.totalTokens =
 								output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 							calculateCost(model, output.usage);
+							recordAnthropicCacheDiagnostics({
+								state: providerSessionState,
+								key: cacheDiagnosticsKey,
+								hash: cacheDiagnosticsHash,
+								cacheReadTokens: output.usage.cacheRead,
+								cacheCreationTokens: output.usage.cacheWrite,
+								modelId: model.id,
+							});
 							continue;
 						}
 
@@ -1466,13 +1642,180 @@ type SystemBlockOptions = {
 	extraInstructions?: string[];
 	billingPayload?: unknown;
 	cacheControl?: AnthropicCacheControl;
+	cachePolicy?: AnthropicCachePolicy;
 };
+
+type AnthropicSystemBlockPlan = {
+	text: string;
+	cacheScope: AnthropicCacheScope | null;
+};
+
+function createSystemBlockFromPlan(plan: AnthropicSystemBlockPlan, policy: AnthropicCachePolicy): AnthropicSystemBlock {
+	const cacheControl = plan.cacheScope === null ? undefined : createCacheControl(policy, plan.cacheScope);
+	return {
+		type: "text",
+		text: plan.text,
+		...(cacheControl && { cache_control: cacheControl }),
+	};
+}
+
+const CLAUDE_AGENT_SDK_CLAUDE_CODE_PRESET_PREFIX =
+	"You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.";
+const CLAUDE_AGENT_SDK_PREFIX = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
+const CLAUDE_CODE_SYSTEM_PROMPT_PREFIXES = new Set([
+	claudeCodeSystemInstruction,
+	CLAUDE_AGENT_SDK_CLAUDE_CODE_PRESET_PREFIX,
+	CLAUDE_AGENT_SDK_PREFIX,
+]);
+
+function splitClaudeCodeSystemPromptBlocks(
+	systemPrompt: readonly string[],
+	policy: AnthropicCachePolicy,
+): AnthropicSystemBlockPlan[] {
+	const useGlobalCacheFeature = policy.useGlobalSystemCache;
+	if (useGlobalCacheFeature && policy.skipGlobalCacheForSystemPrompt) {
+		let attributionHeader: string | undefined;
+		let systemPromptPrefix: string | undefined;
+		const rest: string[] = [];
+
+		for (const prompt of systemPrompt) {
+			if (!prompt || prompt === SYSTEM_PROMPT_DYNAMIC_BOUNDARY) continue;
+			if (prompt.startsWith(CLAUDE_BILLING_HEADER_PREFIX)) {
+				attributionHeader = prompt;
+			} else if (CLAUDE_CODE_SYSTEM_PROMPT_PREFIXES.has(prompt)) {
+				systemPromptPrefix = prompt;
+			} else {
+				rest.push(prompt);
+			}
+		}
+
+		const result: AnthropicSystemBlockPlan[] = [];
+		if (attributionHeader) result.push({ text: attributionHeader, cacheScope: null });
+		if (systemPromptPrefix) result.push({ text: systemPromptPrefix, cacheScope: "org" });
+		const restJoined = rest.join("\n\n");
+		if (restJoined) result.push({ text: restJoined, cacheScope: "org" });
+		return result;
+	}
+
+	if (useGlobalCacheFeature) {
+		const boundaryIndex = systemPrompt.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+		if (boundaryIndex !== -1) {
+			let attributionHeader: string | undefined;
+			let systemPromptPrefix: string | undefined;
+			const staticBlocks: string[] = [];
+			const dynamicBlocks: string[] = [];
+
+			for (let index = 0; index < systemPrompt.length; index++) {
+				const block = systemPrompt[index];
+				if (!block || block === SYSTEM_PROMPT_DYNAMIC_BOUNDARY) continue;
+
+				if (block.startsWith(CLAUDE_BILLING_HEADER_PREFIX)) {
+					attributionHeader = block;
+				} else if (CLAUDE_CODE_SYSTEM_PROMPT_PREFIXES.has(block)) {
+					systemPromptPrefix = block;
+				} else if (index < boundaryIndex) {
+					staticBlocks.push(block);
+				} else {
+					dynamicBlocks.push(block);
+				}
+			}
+
+			const result: AnthropicSystemBlockPlan[] = [];
+			if (attributionHeader) result.push({ text: attributionHeader, cacheScope: null });
+			if (systemPromptPrefix) result.push({ text: systemPromptPrefix, cacheScope: null });
+			const staticJoined = staticBlocks.join("\n\n");
+			if (staticJoined) result.push({ text: staticJoined, cacheScope: "global" });
+			const dynamicJoined = dynamicBlocks.join("\n\n");
+			if (dynamicJoined) result.push({ text: dynamicJoined, cacheScope: null });
+			return result;
+		}
+	}
+
+	let attributionHeader: string | undefined;
+	let systemPromptPrefix: string | undefined;
+	const rest: string[] = [];
+	for (const block of systemPrompt) {
+		if (!block) continue;
+		if (block.startsWith(CLAUDE_BILLING_HEADER_PREFIX)) {
+			attributionHeader = block;
+		} else if (CLAUDE_CODE_SYSTEM_PROMPT_PREFIXES.has(block)) {
+			systemPromptPrefix = block;
+		} else {
+			rest.push(block);
+		}
+	}
+
+	const result: AnthropicSystemBlockPlan[] = [];
+	if (attributionHeader) result.push({ text: attributionHeader, cacheScope: null });
+	if (systemPromptPrefix) result.push({ text: systemPromptPrefix, cacheScope: "org" });
+	const restJoined = rest.join("\n\n");
+	if (restJoined) result.push({ text: restJoined, cacheScope: "org" });
+	return result;
+}
+
+function buildClaudeCodeAlignedSystemBlocks(
+	prompts: readonly string[],
+	options: {
+		includeClaudeCodeInstruction: boolean;
+		extraInstructions: readonly string[];
+		billingPayload?: unknown;
+		cachePolicy: AnthropicCachePolicy;
+	},
+): AnthropicSystemBlock[] | undefined {
+	const { includeClaudeCodeInstruction, extraInstructions, billingPayload, cachePolicy } = options;
+	const sanitizedPrompts = normalizeSystemPrompts(prompts);
+	const trimmedInstructions = extraInstructions.map(instruction => instruction.trim()).filter(Boolean);
+	const hasBillingBlock = sanitizedPrompts.some(block => block.startsWith(CLAUDE_BILLING_HEADER_PREFIX));
+	const hasSystemPromptPrefix = sanitizedPrompts.some(block => CLAUDE_CODE_SYSTEM_PROMPT_PREFIXES.has(block));
+	const payloadSeed = billingPayload ?? {
+		system: sanitizedPrompts,
+		extraInstructions: trimmedInstructions,
+	};
+	const systemPromptForSplit = [
+		includeClaudeCodeInstruction && !hasBillingBlock ? createClaudeBillingHeader(payloadSeed) : undefined,
+		includeClaudeCodeInstruction && !hasSystemPromptPrefix ? claudeCodeSystemInstruction : undefined,
+		...trimmedInstructions,
+		...sanitizedPrompts,
+	].filter((block): block is string => typeof block === "string" && block.length > 0);
+	const plans = splitClaudeCodeSystemPromptBlocks(systemPromptForSplit, cachePolicy);
+	return plans.length > 0 ? plans.map(plan => createSystemBlockFromPlan(plan, cachePolicy)) : undefined;
+}
 
 export function buildAnthropicSystemBlocks(
 	systemPrompt: readonly string[] | undefined,
 	options: SystemBlockOptions = {},
 ): AnthropicSystemBlock[] | undefined {
-	const { includeClaudeCodeInstruction = false, extraInstructions = [], billingPayload, cacheControl } = options;
+	const {
+		includeClaudeCodeInstruction = false,
+		extraInstructions = [],
+		billingPayload,
+		cacheControl,
+		cachePolicy,
+	} = options;
+	if (cachePolicy) {
+		return buildClaudeCodeAlignedSystemBlocks(systemPrompt ?? [], {
+			includeClaudeCodeInstruction,
+			extraInstructions,
+			billingPayload,
+			cachePolicy,
+		});
+	}
+	if (cacheControl) {
+		return buildClaudeCodeAlignedSystemBlocks(systemPrompt ?? [], {
+			includeClaudeCodeInstruction,
+			extraInstructions,
+			billingPayload,
+			cachePolicy: {
+				enabled: true,
+				retention: cacheControl.ttl === "1h" ? "long" : "short",
+				...(cacheControl.ttl === "1h" ? { ttl: "1h" as const } : {}),
+				supportsScope: cacheControl.scope === "global",
+				useGlobalSystemCache: cacheControl.scope === "global",
+				skipGlobalCacheForSystemPrompt: false,
+			},
+		});
+	}
+
 	const blocks: AnthropicSystemBlock[] = [];
 	const sanitizedPrompts = normalizeSystemPrompts(systemPrompt);
 	const trimmedInstructions = extraInstructions.map(instruction => instruction.trim()).filter(Boolean);
@@ -1496,25 +1839,9 @@ export function buildAnthropicSystemBlocks(
 		blocks.push({ type: "text", text: instruction });
 	}
 
-	for (const systemPrompt of sanitizedPrompts) {
-		blocks.push({ type: "text", text: systemPrompt });
-	}
-
-	if (cacheControl) {
-		if (includeClaudeCodeInstruction && blocks.length > 1) {
-			const lastNonBillingIndex = blocks.length - 1;
-			if (lastNonBillingIndex > 1) {
-				blocks[lastNonBillingIndex] = {
-					...blocks[lastNonBillingIndex],
-					cache_control: cacheControl,
-				};
-			}
-		} else {
-			const lastIndex = blocks.length - 1;
-			if (lastIndex >= 0) {
-				blocks[lastIndex] = { ...blocks[lastIndex], cache_control: cacheControl };
-			}
-		}
+	for (const promptBlock of sanitizedPrompts) {
+		if (promptBlock === SYSTEM_PROMPT_DYNAMIC_BOUNDARY) continue;
+		blocks.push({ type: "text", text: promptBlock });
 	}
 
 	return blocks.length > 0 ? blocks : undefined;
@@ -1664,21 +1991,56 @@ type CacheReferenceBlock = {
 	cache_reference?: string;
 };
 
-function applyCacheControlToMessage(message: MessageParam, cacheControl: AnthropicCacheControl): void {
-	if (typeof message.content === "string") {
-		message.content = [{ type: "text", text: message.content, cache_control: cacheControl }];
-		return;
-	}
-	if (!Array.isArray(message.content) || message.content.length === 0) return;
-	const lastIndex = message.content.length - 1;
-	const block = message.content[lastIndex];
-	if (message.role === "assistant" && (block.type === "thinking" || block.type === "redacted_thinking")) {
-		return;
-	}
-	message.content[lastIndex] = { ...block, cache_control: cacheControl } as ContentBlockParam & CacheControlBlock;
+function isToolResultCacheReferenceBlock(block: unknown): block is CacheReferenceBlock & { tool_use_id: string } {
+	return (
+		typeof block === "object" &&
+		block !== null &&
+		(block as CacheReferenceBlock).type === "tool_result" &&
+		typeof (block as CacheReferenceBlock).tool_use_id === "string"
+	);
 }
 
-function addCacheReferencesBeforeLastMarker(params: MessageCreateParamsStreaming): void {
+function insertBlockAfterToolResults(content: unknown[], block: unknown): void {
+	let lastToolResultIndex = -1;
+	for (let index = 0; index < content.length; index++) {
+		if (isToolResultCacheReferenceBlock(content[index])) {
+			lastToolResultIndex = index;
+		}
+	}
+
+	if (lastToolResultIndex >= 0) {
+		const insertPosition = lastToolResultIndex + 1;
+		content.splice(insertPosition, 0, block);
+		if (insertPosition === content.length - 1) {
+			content.push({ type: "text", text: "." });
+		}
+		return;
+	}
+
+	const insertIndex = Math.max(0, content.length - 1);
+	content.splice(insertIndex, 0, block);
+}
+
+function deduplicateCacheEditsBlock(
+	block: AnthropicCacheEditsBlock,
+	seenDeleteRefs: Set<string>,
+): AnthropicCacheEditsBlock {
+	const edits = block.edits.filter(edit => {
+		if (seenDeleteRefs.has(edit.cache_reference)) return false;
+		seenDeleteRefs.add(edit.cache_reference);
+		return true;
+	});
+	return { ...block, edits };
+}
+
+function ensureUserMessageContentArray(message: MessageParam): unknown[] {
+	if (!Array.isArray(message.content)) {
+		message.content = [{ type: "text", text: message.content as string }] as ContentBlockParam[];
+	}
+	return message.content as unknown[];
+}
+
+function findLastMessageCacheControlIndex(params: MessageCreateParamsStreaming): number {
 	let lastCacheControlMessageIndex = -1;
 	for (let index = 0; index < params.messages.length; index++) {
 		const message = params.messages[index];
@@ -1689,25 +2051,105 @@ function addCacheReferencesBeforeLastMarker(params: MessageCreateParamsStreaming
 			lastCacheControlMessageIndex = index;
 		}
 	}
-	if (lastCacheControlMessageIndex <= 0) return;
-	for (let index = 0; index < lastCacheControlMessageIndex; index++) {
-		const message = params.messages[index];
+	return lastCacheControlMessageIndex;
+}
+
+function applyCachedMicrocompactBreakpoints(
+	params: MessageCreateParamsStreaming,
+	options: {
+		enablePromptCaching: boolean;
+		useCachedMicrocompact: boolean;
+		newCacheEdits?: AnthropicCacheEditsBlock | null;
+		pinnedCacheEdits?: AnthropicPinnedCacheEdits[];
+		onPinCacheEdits?: (userMessageIndex: number, block: AnthropicCacheEditsBlock) => void;
+	},
+): void {
+	if (!options.useCachedMicrocompact) return;
+
+	const seenDeleteRefs = new Set<string>();
+	for (const pinned of options.pinnedCacheEdits ?? []) {
+		const message = params.messages[pinned.userMessageIndex];
+		if (!message || message.role !== "user") continue;
+		const dedupedBlock = deduplicateCacheEditsBlock(pinned.block, seenDeleteRefs);
+		if (dedupedBlock.edits.length > 0) {
+			insertBlockAfterToolResults(ensureUserMessageContentArray(message), dedupedBlock);
+		}
+	}
+
+	const newCacheEdits = options.newCacheEdits;
+	if (newCacheEdits && params.messages.length > 0) {
+		const dedupedNewEdits = deduplicateCacheEditsBlock(newCacheEdits, seenDeleteRefs);
+		if (dedupedNewEdits.edits.length > 0) {
+			for (let index = params.messages.length - 1; index >= 0; index--) {
+				const message = params.messages[index];
+				if (!message || message.role !== "user") continue;
+				insertBlockAfterToolResults(ensureUserMessageContentArray(message), dedupedNewEdits);
+				options.onPinCacheEdits?.(index, newCacheEdits);
+				break;
+			}
+		}
+	}
+
+	if (!options.enablePromptCaching) return;
+	const lastCacheControlMessageIndex = findLastMessageCacheControlIndex(params);
+	if (lastCacheControlMessageIndex < 0) return;
+	for (let messageIndex = 0; messageIndex < lastCacheControlMessageIndex; messageIndex++) {
+		const message = params.messages[messageIndex];
 		if (message.role !== "user" || !Array.isArray(message.content)) continue;
+		let cloned = false;
 		for (let blockIndex = 0; blockIndex < message.content.length; blockIndex++) {
-			const block = message.content[blockIndex] as ContentBlockParam & CacheReferenceBlock;
-			if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
+			const block = message.content[blockIndex];
+			if (!isToolResultCacheReferenceBlock(block)) continue;
+			if (!cloned) {
+				message.content = [...message.content];
+				cloned = true;
+			}
 			message.content[blockIndex] = {
-				...block,
+				...(block as unknown as Record<string, unknown>),
 				cache_reference: block.tool_use_id,
-			} as ContentBlockParam;
+			} as unknown as ContentBlockParam;
 		}
 	}
 }
 
-function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?: AnthropicCacheControl): void {
+function findCacheableMessageBlockIndex(message: MessageParam): number {
+	if (!Array.isArray(message.content) || message.content.length === 0) return -1;
+	const blockIndex = message.content.length - 1;
+	const block = message.content[blockIndex];
+	if (!block) return -1;
+	if (message.role === "assistant" && (block.type === "thinking" || block.type === "redacted_thinking")) {
+		return -1;
+	}
+	return blockIndex;
+}
+
+function applyCacheControlToMessage(message: MessageParam, cacheControl: AnthropicCacheControl): boolean {
+	if (typeof message.content === "string") {
+		message.content = [{ type: "text", text: message.content, cache_control: cacheControl }];
+		return true;
+	}
+	if (!Array.isArray(message.content) || message.content.length === 0) return false;
+	const blockIndex = findCacheableMessageBlockIndex(message);
+	if (blockIndex < 0) return false;
+	const content = [...message.content];
+	const block = content[blockIndex];
+	if (!block) return false;
+	content[blockIndex] = { ...block, cache_control: cacheControl } as ContentBlockParam & CacheControlBlock;
+	message.content = content;
+	return true;
+}
+
+function applyPromptCaching(
+	params: MessageCreateParamsStreaming,
+	cacheControl: AnthropicCacheControl | undefined,
+	skipCacheWrite = false,
+): void {
 	if (!cacheControl || params.messages.length === 0) return;
-	applyCacheControlToMessage(params.messages[params.messages.length - 1]!, cacheControl);
-	addCacheReferencesBeforeLastMarker(params);
+	const markerIndex = skipCacheWrite ? params.messages.length - 2 : params.messages.length - 1;
+	if (markerIndex < 0) return;
+	const markerMessage = params.messages[markerIndex];
+	if (!markerMessage) return;
+	applyCacheControlToMessage(markerMessage, cacheControl);
 }
 
 function normalizeCacheControlBlockTtl(block: CacheControlBlock, seenFiveMinute: { value: boolean }): void {
@@ -1742,100 +2184,85 @@ function normalizeCacheControlTtlOrdering(params: MessageCreateParamsStreaming):
 	}
 }
 
-function findLastCacheControlIndex<T extends CacheControlBlock>(blocks: T[]): number {
-	for (let index = blocks.length - 1; index >= 0; index--) {
-		if (blocks[index]?.cache_control != null) return index;
-	}
-	return -1;
+type CacheControlLocation = {
+	block: CacheControlBlock;
+	priority: number;
+	order: number;
+	label: string;
+};
+
+function cacheControlPriority(cacheControl: AnthropicCacheControl | null | undefined, label: string): number {
+	if (!cacheControl) return 0;
+	if (label === "system" && cacheControl.scope === "global") return 100;
+	if (label === "system") return 90;
+	if (label === "message") return 80;
+	if (label === "tool") return 70;
+	return 10;
 }
 
-function stripCacheControlExceptIndex<T extends CacheControlBlock>(
-	blocks: T[],
-	preserveIndex: number,
-	excessCounter: { value: number },
-): void {
-	for (let index = 0; index < blocks.length && excessCounter.value > 0; index++) {
-		if (index === preserveIndex) continue;
-		if (!blocks[index]?.cache_control) continue;
-		delete blocks[index].cache_control;
-		excessCounter.value--;
-	}
-}
-
-function stripAllCacheControl<T extends CacheControlBlock>(blocks: T[], excessCounter: { value: number }): void {
-	for (const block of blocks) {
-		if (excessCounter.value <= 0) return;
-		if (!block.cache_control) continue;
-		delete block.cache_control;
-		excessCounter.value--;
-	}
-}
-
-function stripMessageCacheControl(
-	messages: MessageCreateParamsStreaming["messages"],
-	excessCounter: { value: number },
-): void {
-	for (const message of messages) {
-		if (excessCounter.value <= 0) return;
-		if (!Array.isArray(message.content)) continue;
-		for (const block of message.content as Array<ContentBlockParam & CacheControlBlock>) {
-			if (excessCounter.value <= 0) return;
-			if (!block.cache_control) continue;
-			delete block.cache_control;
-			excessCounter.value--;
-		}
-	}
-}
-
-function countCacheControlBreakpoints(params: MessageCreateParamsStreaming): number {
-	let total = 0;
+function collectCacheControlLocations(params: MessageCreateParamsStreaming): CacheControlLocation[] {
+	const locations: CacheControlLocation[] = [];
+	let order = 0;
 	if (params.tools) {
 		for (const tool of params.tools as Array<Anthropic.Messages.Tool & CacheControlBlock>) {
-			if (tool.cache_control) total++;
+			if (tool.cache_control) {
+				locations.push({
+					block: tool,
+					priority: cacheControlPriority(tool.cache_control, "tool"),
+					order,
+					label: "tool",
+				});
+			}
+			order++;
 		}
 	}
 	if (params.system && Array.isArray(params.system)) {
 		for (const block of params.system as Array<AnthropicSystemBlock & CacheControlBlock>) {
-			if (block.cache_control) total++;
+			if (block.cache_control) {
+				locations.push({
+					block,
+					priority: cacheControlPriority(block.cache_control, "system"),
+					order,
+					label: "system",
+				});
+			}
+			order++;
 		}
 	}
 	for (const message of params.messages) {
-		if (!Array.isArray(message.content)) continue;
+		if (!Array.isArray(message.content)) {
+			order++;
+			continue;
+		}
 		for (const block of message.content as Array<ContentBlockParam & CacheControlBlock>) {
-			if (block.cache_control) total++;
+			if (block.cache_control) {
+				locations.push({
+					block,
+					priority: cacheControlPriority(block.cache_control, "message"),
+					order,
+					label: "message",
+				});
+			}
+			order++;
 		}
 	}
-	return total;
+	return locations;
 }
 
 function enforceCacheControlLimit(params: MessageCreateParamsStreaming, maxBreakpoints: number): void {
-	const total = countCacheControlBreakpoints(params);
-	if (total <= maxBreakpoints) return;
-	const excessCounter = { value: total - maxBreakpoints };
-	const systemBlocks =
-		params.system && Array.isArray(params.system)
-			? (params.system as Array<AnthropicSystemBlock & CacheControlBlock>)
-			: [];
-	const toolBlocks = (params.tools ?? []) as Array<Anthropic.Messages.Tool & CacheControlBlock>;
-	const lastSystemIndex = findLastCacheControlIndex(systemBlocks);
-	const lastToolIndex = findLastCacheControlIndex(toolBlocks);
-	if (systemBlocks.length > 0) {
-		stripCacheControlExceptIndex(systemBlocks, lastSystemIndex, excessCounter);
+	const locations = collectCacheControlLocations(params);
+	if (locations.length <= maxBreakpoints) return;
+	const toStrip = locations
+		.sort((left, right) => left.priority - right.priority || left.order - right.order)
+		.slice(0, locations.length - maxBreakpoints);
+	for (const location of toStrip) {
+		delete location.block.cache_control;
 	}
-	if (excessCounter.value <= 0) return;
-	if (toolBlocks.length > 0) {
-		stripCacheControlExceptIndex(toolBlocks, lastToolIndex, excessCounter);
-	}
-	if (excessCounter.value <= 0) return;
-	stripMessageCacheControl(params.messages, excessCounter);
-	if (excessCounter.value <= 0) return;
-	if (systemBlocks.length > 0) {
-		stripAllCacheControl(systemBlocks, excessCounter);
-	}
-	if (excessCounter.value <= 0) return;
-	if (toolBlocks.length > 0) {
-		stripAllCacheControl(toolBlocks, excessCounter);
-	}
+	logger.debug("Stripped excess Anthropic cache_control breakpoints", {
+		total: locations.length,
+		maxBreakpoints,
+		stripped: toStrip.map(location => location.label).join(","),
+	});
 }
 
 function orderAnthropicRequestParams(params: AnthropicSamplingParams): MessageCreateParamsStreaming {
@@ -1871,6 +2298,182 @@ function orderAnthropicRequestParams(params: AnthropicSamplingParams): MessageCr
 	return ordered as AnthropicSamplingParams;
 }
 
+function isFirstPartyAnthropicRequest(model: Model<"anthropic-messages">, baseUrl: string): boolean {
+	return model.provider === "anthropic" && isAnthropicApiBaseUrl(baseUrl);
+}
+
+function isAnthropicMcpTool(tool: Tool): boolean {
+	const metadata = tool as Tool & { isMcp?: unknown; mcpServerName?: unknown };
+	return metadata.isMcp === true || typeof metadata.mcpServerName === "string" || tool.name.startsWith("mcp__");
+}
+
+function isDeferredFromAnthropicRequest(tool: Tool): boolean {
+	const metadata = tool as Tool & { deferLoading?: unknown; defer_loading?: unknown };
+	return metadata.deferLoading === true || metadata.defer_loading === true;
+}
+
+function findToolCacheControlOverlayIndex(tools: Tool[]): number {
+	for (let index = tools.length - 1; index >= 0; index--) {
+		if (!isDeferredFromAnthropicRequest(tools[index]!)) return index;
+	}
+	return -1;
+}
+
+function modelSupportsToolReference(modelId: string): boolean {
+	return !modelId.toLowerCase().includes("haiku");
+}
+
+function isToolSearchTool(tool: Tool): boolean {
+	return tool.name === "search_tool_bm25";
+}
+
+function hasDeferredAnthropicTools(tools: Tool[] | undefined): boolean {
+	return tools?.some(isDeferredFromAnthropicRequest) ?? false;
+}
+
+function parseAutoToolSearchPercentage(value: string): number | null {
+	if (!value.startsWith("auto:")) return null;
+	const parsed = Number.parseInt(value.slice(5), 10);
+	if (!Number.isFinite(parsed)) return null;
+	return Math.max(0, Math.min(100, parsed));
+}
+
+function getAutoToolSearchPercentage(value: string | undefined): number {
+	if (!value || value === "auto") return defaultAutoToolSearchPercentage;
+	return parseAutoToolSearchPercentage(value) ?? defaultAutoToolSearchPercentage;
+}
+
+function getToolSearchMode(value: string | undefined): "standard" | "auto" | "enabled" {
+	const autoPercentage = value ? parseAutoToolSearchPercentage(value) : null;
+	if (autoPercentage === 0) return "enabled";
+	if (autoPercentage === 100) return "standard";
+	if (value === "auto" || (value?.startsWith("auto:") ?? false)) return "auto";
+	if (isEnvTruthy(value)) return "enabled";
+	if (value !== undefined) return "standard";
+	return "enabled";
+}
+
+function estimateDeferredToolSearchChars(tools: Tool[]): number {
+	let total = 0;
+	for (const tool of tools) {
+		if (!isDeferredFromAnthropicRequest(tool)) continue;
+		total += tool.name.length;
+		total += (tool.description ?? "").length;
+		try {
+			total += JSON.stringify(tool.parameters ?? {}).length;
+		} catch {
+			total += String(tool.parameters ?? "").length;
+		}
+	}
+	return total;
+}
+
+function passesAutoToolSearchThreshold(
+	model: Model<"anthropic-messages">,
+	tools: Tool[],
+	configuredMode: string | undefined,
+): boolean {
+	const percentage = getAutoToolSearchPercentage(configuredMode) / 100;
+	const charThreshold = Math.floor(model.contextWindow * percentage * toolSearchCharsPerToken);
+	return estimateDeferredToolSearchChars(tools) >= charThreshold;
+}
+
+function shouldUseAnthropicToolSearch(
+	model: Model<"anthropic-messages">,
+	baseUrl: string,
+	tools: Tool[] | undefined,
+): boolean {
+	if (!tools || !hasDeferredAnthropicTools(tools)) return false;
+	if (isEnvTruthy($env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)) return false;
+	if (!modelSupportsToolReference(model.id)) return false;
+	if (!tools.some(isToolSearchTool)) return false;
+	const configuredMode = $env.ENABLE_TOOL_SEARCH;
+	const mode = getToolSearchMode(configuredMode);
+	if (mode === "standard") return false;
+	if (
+		model.provider === "anthropic" &&
+		!isAnthropicApiBaseUrl(baseUrl) &&
+		!isEnvTruthy(configuredMode) &&
+		mode !== "enabled"
+	) {
+		return false;
+	}
+	if (mode === "auto" && !passesAutoToolSearchThreshold(model, tools, configuredMode)) return false;
+	return true;
+}
+
+function extractDiscoveredToolReferenceNames(messages: Message[]): Set<string> {
+	const discovered = new Set<string>();
+	for (const message of messages) {
+		const providerPayload = "providerPayload" in message ? message.providerPayload : undefined;
+		if (providerPayload?.type === "anthropicDiscoveredTools") {
+			for (const toolName of providerPayload.toolNames) {
+				discovered.add(toolName);
+			}
+		}
+		if (message.role !== "toolResult") continue;
+		for (const block of message.content) {
+			if (block.type === "text" && typeof block.toolReferenceName === "string") {
+				discovered.add(block.toolReferenceName);
+			}
+		}
+	}
+	return discovered;
+}
+
+function filterToolsForAnthropicToolSearch(
+	tools: Tool[] | undefined,
+	messages: Message[],
+	enabled: boolean,
+): Tool[] | undefined {
+	if (!tools) return undefined;
+	if (!enabled) return tools;
+	const discoveredToolNames = extractDiscoveredToolReferenceNames(messages);
+	return tools.filter(tool => {
+		if (!isDeferredFromAnthropicRequest(tool)) return true;
+		if (isToolSearchTool(tool)) return true;
+		return discoveredToolNames.has(tool.name);
+	});
+}
+
+function buildDeferredToolsAnnouncement(tools: Tool[] | undefined, enabled: boolean): Message | undefined {
+	if (!enabled || !tools) return undefined;
+	const deferredToolNames = tools
+		.filter(tool => isDeferredFromAnthropicRequest(tool) && !isToolSearchTool(tool))
+		.map(tool => tool.name)
+		.sort();
+	if (deferredToolNames.length === 0) return undefined;
+	return {
+		role: "user",
+		content: `<available-deferred-tools>\n${deferredToolNames.join("\n")}\n</available-deferred-tools>`,
+		timestamp: Date.now(),
+	};
+}
+
+function shouldSkipGlobalCacheForSystemPrompt(
+	model: Model<"anthropic-messages">,
+	baseUrl: string,
+	tools: Tool[] | undefined,
+	options: AnthropicOptions | undefined,
+): boolean {
+	if (options?.skipGlobalCacheForSystemPrompt !== undefined) return options.skipGlobalCacheForSystemPrompt;
+	if (!isFirstPartyAnthropicRequest(model, baseUrl)) return false;
+	if (isEnvTruthy($env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)) return false;
+	return tools?.some(tool => isAnthropicMcpTool(tool) && !isDeferredFromAnthropicRequest(tool)) ?? false;
+}
+
+function shouldUseCachedMicrocompact(
+	model: Model<"anthropic-messages">,
+	baseUrl: string,
+	options: AnthropicOptions | undefined,
+): boolean {
+	return (
+		options?.useCachedMicrocompact === true &&
+		isFirstPartyAnthropicRequest(model, baseUrl) &&
+		options.querySource === "repl_main_thread"
+	);
+}
+
 function buildParams(
 	model: Model<"anthropic-messages">,
 	baseUrl: string,
@@ -1879,10 +2482,24 @@ function buildParams(
 	options?: AnthropicOptions,
 	disableStrictTools = false,
 ): MessageCreateParamsStreaming {
-	const { cacheControl } = getCacheControl(model, baseUrl, options?.cacheRetention);
+	const useToolSearch = shouldUseAnthropicToolSearch(model, baseUrl, context.tools);
+	const requestTools = filterToolsForAnthropicToolSearch(context.tools, context.messages, useToolSearch);
+	const skipGlobalCacheForSystemPrompt = shouldSkipGlobalCacheForSystemPrompt(model, baseUrl, requestTools, options);
+	const cachePolicy = getCachePolicy(model, baseUrl, {
+		...options,
+		skipGlobalCacheForSystemPrompt,
+	});
+	const availableToolNames = new Set(requestTools?.map(tool => tool.name) ?? []);
+	const deferredToolsAnnouncement = buildDeferredToolsAnnouncement(context.tools, useToolSearch);
+	const requestMessages = deferredToolsAnnouncement
+		? [deferredToolsAnnouncement, ...context.messages]
+		: context.messages;
 	let params: AnthropicSamplingParams = {
 		model: model.id,
-		messages: convertAnthropicMessages(context.messages, model, isOAuthToken),
+		messages: convertAnthropicMessages(requestMessages, model, isOAuthToken, {
+			toolSearchEnabled: useToolSearch,
+			availableToolNames,
+		}),
 		max_tokens: options?.maxTokens || (model.maxTokens / 3) | 0,
 		stream: true,
 	};
@@ -1904,12 +2521,14 @@ function buildParams(
 		delete params.temperature;
 	}
 
-	if (context.tools) {
+	if (requestTools) {
 		params.tools = convertTools(
-			context.tools,
+			requestTools,
 			isOAuthToken,
 			disableStrictTools || model.provider === "github-copilot",
 			getAnthropicCompat(model).supportsEagerToolInputStreaming,
+			skipGlobalCacheForSystemPrompt ? createCacheControl(cachePolicy) : undefined,
+			useToolSearch,
 		);
 	}
 
@@ -1980,15 +2599,22 @@ function buildParams(
 	const systemBlocks = buildAnthropicSystemBlocks(context.systemPrompt, {
 		includeClaudeCodeInstruction: shouldInjectClaudeCodeInstruction,
 		billingPayload,
-		cacheControl,
+		cachePolicy,
 	});
 	if (systemBlocks) {
 		params.system = systemBlocks;
 	}
 	disableThinkingIfToolChoiceForced(params);
 	ensureMaxTokensForThinking(params, model);
-	applyPromptCaching(params, cacheControl);
+	applyPromptCaching(params, createCacheControl(cachePolicy), options?.skipCacheWrite);
 	enforceCacheControlLimit(params, 4);
+	applyCachedMicrocompactBreakpoints(params, {
+		enablePromptCaching: cachePolicy.enabled,
+		useCachedMicrocompact: shouldUseCachedMicrocompact(model, baseUrl, options),
+		newCacheEdits: options?.newCacheEdits,
+		pinnedCacheEdits: options?.pinnedCacheEdits,
+		onPinCacheEdits: options?.onPinCacheEdits,
+	});
 	normalizeCacheControlTtlOrdering(params);
 	params = orderAnthropicRequestParams(params) as AnthropicSamplingParams;
 	finalizeClaudeBillingHeaderCch(params);
@@ -2034,11 +2660,16 @@ function isNonSigningAnthropicEndpoint(model: Model<"anthropic-messages">): bool
 	}
 }
 
-function buildToolResultBlock(model: Model<"anthropic-messages">, msg: ToolResultMessage): ContentBlockParam {
+function buildToolResultBlock(
+	model: Model<"anthropic-messages">,
+	msg: ToolResultMessage,
+	isOAuthToken: boolean,
+	options?: { toolSearchEnabled?: boolean; availableToolNames?: ReadonlySet<string> },
+): ContentBlockParam {
 	const block: ContentBlockParam = {
 		type: "tool_result",
 		tool_use_id: msg.toolCallId,
-		content: convertContentBlocks(msg.content),
+		content: convertContentBlocks(msg.content, isOAuthToken, options),
 		is_error: msg.isError,
 	};
 	if (isZaiAnthropicEndpoint(model)) {
@@ -2052,6 +2683,7 @@ export function convertAnthropicMessages(
 	messages: Message[],
 	model: Model<"anthropic-messages">,
 	isOAuthToken: boolean,
+	options?: { toolSearchEnabled?: boolean; availableToolNames?: ReadonlySet<string> },
 ): MessageParam[] {
 	const params: MessageParam[] = [];
 
@@ -2177,13 +2809,13 @@ export function convertAnthropicMessages(
 			const toolResults: ContentBlockParam[] = [];
 
 			// Add the current tool result
-			toolResults.push(buildToolResultBlock(model, msg));
+			toolResults.push(buildToolResultBlock(model, msg, isOAuthToken, options));
 
 			// Look ahead for consecutive toolResult messages
 			let j = i + 1;
 			while (j < transformedMessages.length && transformedMessages[j].role === "toolResult") {
 				const nextMsg = transformedMessages[j] as ToolResultMessage; // We know it's a toolResult
-				toolResults.push(buildToolResultBlock(model, nextMsg));
+				toolResults.push(buildToolResultBlock(model, nextMsg, isOAuthToken, options));
 				j++;
 			}
 
@@ -2502,18 +3134,28 @@ function convertTools(
 	isOAuthToken: boolean,
 	disableStrictTools = false,
 	supportsEagerToolInputStreaming = true,
+	toolCacheControl?: AnthropicCacheControl,
+	toolSearchEnabled = true,
 ): Anthropic.Messages.Tool[] {
 	if (!tools) return [];
 	const schemaPlans = buildAnthropicToolSchemaPlans(tools, disableStrictTools);
+	const toolCacheControlOverlayIndex = toolCacheControl ? findToolCacheControlOverlayIndex(tools) : -1;
 
 	return tools.map((tool, index) => {
 		const plan = schemaPlans[index];
+		const deferLoading = toolSearchEnabled && (tool.deferLoading === true || tool.defer_loading === true);
+		const cacheControl =
+			tool.cacheControl ??
+			tool.cache_control ??
+			(index === toolCacheControlOverlayIndex ? toolCacheControl : undefined);
 		return {
 			name: isOAuthToken ? applyClaudeToolPrefix(tool.name) : tool.name,
 			description: tool.description || "",
 			input_schema: plan.inputSchema,
 			...(supportsEagerToolInputStreaming ? { eager_input_streaming: true } : {}),
 			...(plan.strict ? { strict: true } : {}),
+			...(deferLoading ? { defer_loading: true } : {}),
+			...(cacheControl ? { cache_control: cacheControl } : {}),
 		};
 	});
 }

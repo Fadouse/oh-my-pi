@@ -36,6 +36,7 @@ const searchToolBm25Schema = Type.Object({
 		examples: ["kubernetes pod", "image processing", "git commit"],
 	}),
 	limit: Type.Optional(Type.Integer({ description: "max matches", minimum: 1 })),
+	max_results: Type.Optional(Type.Integer({ description: "max matches (Claude Code-compatible alias)", minimum: 1 })),
 });
 
 type SearchToolBm25Params = Static<typeof searchToolBm25Schema>;
@@ -135,6 +136,13 @@ async function activateTools(session: ToolSession, toolNames: string[]): Promise
 		return session.activateDiscoveredMCPTools(toolNames);
 	}
 	return [];
+}
+
+function isDeferredMCPToolReference(session: ToolSession, toolName: string): boolean {
+	const tool = session.getToolByName?.(toolName) as
+		| (AgentTool & { deferLoading?: unknown; defer_loading?: unknown })
+		| undefined;
+	return toolName.startsWith("mcp__") && (tool?.deferLoading === true || tool?.defer_loading === true);
 }
 
 type DiscoveryExecutionSession = ToolSession & {
@@ -249,13 +257,28 @@ export class SearchToolBm25Tool implements AgentTool<typeof searchToolBm25Schema
 		if (query.length === 0) {
 			throw new ToolError("Query is required and must not be empty.");
 		}
-		const limit = params.limit ?? DEFAULT_LIMIT;
+		const limit = params.limit ?? params.max_results ?? DEFAULT_LIMIT;
 		if (!Number.isInteger(limit) || limit <= 0) {
 			throw new ToolError("Limit must be a positive integer.");
 		}
 
 		const searchIndex = getDiscoverableToolSearchIndexForExecution(this.session);
 		const selectedToolNames = new Set(getSelectedToolNames(this.session));
+		const selectMatch = /^select:(.+)$/i.exec(query);
+		if (selectMatch) {
+			const requested = selectMatch[1]
+				.split(",")
+				.map(name => name.trim())
+				.filter(Boolean);
+			const byName = new Map(searchIndex.documents.map(document => [document.tool.name, document.tool]));
+			const ranked = requested
+				.map(name => byName.get(name))
+				.filter((tool): tool is DiscoverableTool => tool !== undefined && !selectedToolNames.has(tool.name))
+				.slice(0, limit)
+				.map(tool => ({ tool, score: 1 }));
+			return await this.#buildResult(query, limit, searchIndex.documents.length, ranked);
+		}
+
 		let ranked: Array<{ tool: DiscoverableTool; score: number }> = [];
 		try {
 			ranked = searchDiscoverableTools(searchIndex, query, searchIndex.documents.length)
@@ -267,25 +290,34 @@ export class SearchToolBm25Tool implements AgentTool<typeof searchToolBm25Schema
 			}
 			throw error;
 		}
-		const activated =
-			ranked.length > 0
-				? await activateTools(
-						this.session,
-						ranked.map(result => result.tool.name),
-					)
-				: [];
+		return await this.#buildResult(query, limit, searchIndex.documents.length, ranked);
+	}
+
+	async #buildResult(
+		query: string,
+		limit: number,
+		totalTools: number,
+		ranked: Array<{ tool: DiscoverableTool; score: number }>,
+	): Promise<AgentToolResult<SearchToolBm25Details>> {
+		const matchedToolNames = ranked.map(result => result.tool.name);
+		const referencedTools = matchedToolNames.filter(name => isDeferredMCPToolReference(this.session, name));
+		const activatableTools = matchedToolNames.filter(name => !referencedTools.includes(name));
+		const activated = activatableTools.length > 0 ? await activateTools(this.session, activatableTools) : [];
 
 		const details: SearchToolBm25Details = {
 			query,
 			limit,
-			total_tools: searchIndex.documents.length,
+			total_tools: totalTools,
 			activated_tools: activated,
 			active_selected_tools: getSelectedToolNames(this.session),
 			tools: ranked.map(result => formatMatch(result.tool, result.score)),
 		};
 
 		return {
-			content: [{ type: "text", text: buildSearchToolBm25Content(details) }],
+			content:
+				referencedTools.length > 0
+					? referencedTools.map(toolName => ({ type: "text" as const, text: "", toolReferenceName: toolName }))
+					: [{ type: "text", text: buildSearchToolBm25Content(details) }],
 			details,
 		};
 	}

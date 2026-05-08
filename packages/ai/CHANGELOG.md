@@ -5,6 +5,13 @@
 ### Changed
 
 - Aligned Anthropic OAuth request fingerprinting, prompt-caching markers/scopes, and Claude Code headers with `opencode-claude-auth`, including deterministic billing suffixes, final-body CCH signing, official Claude Code identity text, `mcp_` PascalCase tool names, OMP-managed Claude Code-style JSON metadata identity persisted at Anthropic OAuth login/refresh, unified request/session IDs, official Claude Code OAuth endpoints/scopes, updated beta flags, and current Stainless package defaults.
+- Added Anthropic conversion for Claude Code-style deferred tool schemas and `tool_reference` tool-result blocks used by tool search.
+- Changed Anthropic tool search request shaping to add the official beta header only when deferred tool search is active, omit undiscovered deferred schemas until a `tool_reference` appears in history, and strip stale/unsupported `tool_reference` blocks before sending requests.
+- Changed Anthropic tool search auto mode to follow Claude Code-style `ENABLE_TOOL_SEARCH=auto[:N]` threshold behavior and carry discovered deferred tools through compacted summaries.
+
+### Fixed
+
+- Matched Claude Code Anthropic prompt-cache request shaping for system splits, message markers, cached microcompact `cache_edits`/`cache_reference` placement, omitted ordinary `tool_result.cache_reference` fields, omitted explicit `scope: "org"` cache controls, assistant thinking-tail marker handling, query-source propagation, and MCP deferred-tool global-cache gating.
 
 ## [14.7.6] - 2026-05-07
 

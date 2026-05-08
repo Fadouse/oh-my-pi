@@ -112,6 +112,7 @@ import { parseThinkingLevel, resolveThinkingLevelForModel, toReasoningEffort } f
 import {
 	collectDiscoverableTools,
 	type DiscoverableTool,
+	isMCPToolName,
 	summarizeDiscoverableTools,
 } from "./tool-discovery/tool-index";
 import {
@@ -177,6 +178,9 @@ export interface CreateAgentSessionOptions {
 	/** Optional provider-facing session identifier for prompt caches and sticky auth selection.
 	 * Keeps persisted session files isolated while reusing provider-side caches. */
 	providerSessionId?: string;
+	/** Claude Code query source forwarded to provider cache-policy gates.
+	 * Defaults to "repl_main_thread" for top-level sessions and "agent:<id>" for subagents. */
+	querySource?: string;
 
 	/** Custom tools to register (in addition to built-in tools). Accepts both CustomTool and ToolDefinition. */
 	customTools?: (CustomTool | ToolDefinition)[];
@@ -1362,15 +1366,82 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		});
 
 		const repeatToolDescriptions = settings.get("repeatToolDescriptions");
+
+		const isEnvTruthy = (value: string | undefined): boolean => value?.toLowerCase() === "true" || value === "1";
+		const isFirstPartyAnthropicBaseUrl = (value: string | undefined): boolean => {
+			if (!value) return true;
+			try {
+				const hostname = new URL(value).hostname.toLowerCase();
+				return hostname === "api.anthropic.com" || hostname.endsWith(".anthropic.com");
+			} catch {
+				return false;
+			}
+		};
+		const parseAutoToolSearchPercentage = (value: string): number | null => {
+			if (!value.startsWith("auto:")) return null;
+			const parsed = Number.parseInt(value.slice(5), 10);
+			if (!Number.isFinite(parsed)) return null;
+			return Math.max(0, Math.min(100, parsed));
+		};
+		const getToolSearchMode = (value: string | undefined): "standard" | "auto" | "enabled" => {
+			const autoPercentage = value ? parseAutoToolSearchPercentage(value) : null;
+			if (autoPercentage === 0) return "enabled";
+			if (autoPercentage === 100) return "standard";
+			if (value === "auto" || (value?.startsWith("auto:") ?? false)) return "auto";
+			if (isEnvTruthy(value)) return "enabled";
+			if (value !== undefined) return "standard";
+			return "enabled";
+		};
+		const estimateDeferredToolSearchChars = (toolNames: Iterable<string>): number => {
+			let total = 0;
+			for (const name of toolNames) {
+				const tool = toolRegistry.get(name);
+				if (!tool) continue;
+				total += tool.name.length + (tool.description ?? "").length;
+				try {
+					total += JSON.stringify(tool.parameters ?? {}).length;
+				} catch {
+					total += String(tool.parameters ?? "").length;
+				}
+			}
+			return total;
+		};
+		const passesAutoToolSearchThreshold = (toolNames: Iterable<string>): boolean => {
+			if (!model) return false;
+			const configuredMode = $env.ENABLE_TOOL_SEARCH;
+			const percentage =
+				(configuredMode === "auto" || !configuredMode
+					? 10
+					: (parseAutoToolSearchPercentage(configuredMode) ?? 10)) / 100;
+			const charThreshold = Math.floor(model.contextWindow * percentage * 2.5);
+			return estimateDeferredToolSearchChars(toolNames) >= charThreshold;
+		};
+		const toolSearchMode = getToolSearchMode($env.ENABLE_TOOL_SEARCH);
+		const toolSearchSupported =
+			model !== undefined &&
+			!isEnvTruthy($env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS) &&
+			toolSearchMode !== "standard" &&
+			!model.id.toLowerCase().includes("haiku") &&
+			(model.provider !== "anthropic" ||
+				isFirstPartyAnthropicBaseUrl(model.baseUrl) ||
+				isEnvTruthy($env.ENABLE_TOOL_SEARCH) ||
+				toolSearchMode === "auto");
 		const eagerTasks = settings.get("task.eager");
 		const intentField = settings.get("tools.intentTracing") || $flag("PI_INTENT_TRACING") ? INTENT_FIELD : undefined;
+
+		const isDeferredMCPToolForToolSearch = (tool: AgentTool | undefined): boolean =>
+			mcpDiscoveryEnabled &&
+			tool !== undefined &&
+			isMCPToolName(tool.name) &&
+			(tool.deferLoading === true || tool.defer_loading === true);
 		const rebuildSystemPrompt = async (
 			toolNames: string[],
 			tools: Map<string, AgentTool>,
 		): Promise<BuildSystemPromptResult> => {
 			toolContextStore.setToolNames(toolNames);
+			const promptToolNames = toolNames.filter(name => !isDeferredMCPToolForToolSearch(tools.get(name)));
 			const discoverableMCPTools = mcpDiscoveryEnabled ? collectDiscoverableMCPTools(tools.values()) : [];
-			const activeToolNames = new Set(toolNames);
+			const activeToolNames = new Set(promptToolNames);
 			const discoverableBuiltinTools: DiscoverableTool[] =
 				effectiveDiscoveryMode === "all"
 					? collectDiscoverableTools(
@@ -1394,7 +1465,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			];
 			const discoverableToolSummary = summarizeDiscoverableTools(discoverableToolsForDesc);
 			const hasDiscoverableTools =
-				mcpDiscoveryEnabled && toolNames.includes("search_tool_bm25") && discoverableToolsForDesc.length > 0;
+				mcpDiscoveryEnabled && promptToolNames.includes("search_tool_bm25") && discoverableToolsForDesc.length > 0;
 			const promptTools = buildSystemPromptToolMetadata(tools, {
 				search_tool_bm25: { description: renderSearchToolBm25Description(discoverableToolsForDesc) },
 			});
@@ -1427,7 +1498,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				skills,
 				contextFiles,
 				tools: promptTools,
-				toolNames,
+				toolNames: promptToolNames,
 				rules: rulebookRules,
 				alwaysApplyRules,
 				skillsSettings: settings.getGroup("skills"),
@@ -1504,10 +1575,29 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				: [...new Set([...restoredSelectedMCPToolNames, ...defaultSelectedMCPToolNames])];
 			initialToolNames = [
 				...new Set([
-					...initialRequestedActiveToolNames.filter(name => !name.startsWith("mcp__")),
+					...initialRequestedActiveToolNames.filter(name => !isMCPToolName(name)),
 					...initialSelectedMCPToolNames,
 				]),
 			];
+		}
+		const deferredMCPToolNameCandidates =
+			mcpDiscoveryEnabled && options.toolNames === undefined && toolSearchSupported
+				? Array.from(toolRegistry.keys()).filter(
+						name => isMCPToolName(name) && !defaultSelectedMCPToolNames.includes(name),
+					)
+				: [];
+		const deferredMCPToolNames =
+			toolSearchMode === "auto" && !passesAutoToolSearchThreshold(deferredMCPToolNameCandidates)
+				? new Set<string>()
+				: new Set(deferredMCPToolNameCandidates);
+		for (const name of deferredMCPToolNames) {
+			const tool = toolRegistry.get(name);
+			if (tool) {
+				tool.deferLoading = true;
+			}
+			if (toolRegistry.has(name) && !initialToolNames.includes(name)) {
+				initialToolNames.push(name);
+			}
 		}
 
 		// Custom tools and extension-registered tools are always included regardless of toolNames filter
@@ -1628,6 +1718,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			: serviceTierSetting === "none"
 				? undefined
 				: serviceTierSetting;
+		const providerQuerySource =
+			options.querySource ?? (options.parentTaskPrefix ? `agent:${options.parentTaskPrefix}` : "repl_main_thread");
 
 		agent = new Agent({
 			initialState: {
@@ -1640,6 +1732,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			onPayload,
 			onResponse,
 			sessionId: providerSessionId,
+			querySource: providerQuerySource,
 			transformContext,
 			steeringMode: settings.get("steeringMode") ?? "one-at-a-time",
 			followUpMode: settings.get("followUpMode") ?? "one-at-a-time",

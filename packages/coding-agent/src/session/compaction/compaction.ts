@@ -595,6 +595,42 @@ function withOpenAiRemoteCompactionPreserveData(
 	return Object.keys(rest).length > 0 ? rest : undefined;
 }
 
+const ANTHROPIC_DISCOVERED_TOOLS_PRESERVE_KEY = "anthropicDiscoveredTools";
+
+function getPreservedAnthropicDiscoveredTools(preserveData: Record<string, unknown> | undefined): string[] {
+	const candidate = preserveData?.[ANTHROPIC_DISCOVERED_TOOLS_PRESERVE_KEY];
+	if (!Array.isArray(candidate)) return [];
+	return candidate.filter((name): name is string => typeof name === "string" && name.length > 0);
+}
+
+function collectAnthropicDiscoveredTools(messages: AgentMessage[]): string[] {
+	const discovered = new Set<string>();
+	for (const message of messages) {
+		if (message.role !== "toolResult") continue;
+		for (const block of message.content) {
+			if (
+				block.type === "text" &&
+				typeof block.toolReferenceName === "string" &&
+				block.toolReferenceName.length > 0
+			) {
+				discovered.add(block.toolReferenceName);
+			}
+		}
+	}
+	return [...discovered].sort();
+}
+
+function withAnthropicDiscoveredToolsPreserveData(
+	preserveData: Record<string, unknown> | undefined,
+	toolNames: string[],
+): Record<string, unknown> | undefined {
+	if (toolNames.length === 0) return preserveData;
+	return {
+		...(preserveData ?? {}),
+		[ANTHROPIC_DISCOVERED_TOOLS_PRESERVE_KEY]: [...new Set(toolNames)].sort(),
+	};
+}
+
 function estimateOpenAiCompactInputTokens(input: Array<Record<string, unknown>>, instructions: string): number {
 	let chars = instructions.length;
 	for (const item of input) {
@@ -1252,6 +1288,10 @@ export async function compact(
 	};
 
 	let preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, undefined);
+	const discoveredAnthropicTools = [
+		...getPreservedAnthropicDiscoveredTools(previousPreserveData),
+		...collectAnthropicDiscoveredTools([...messagesToSummarize, ...turnPrefixMessages, ...recentMessages]),
+	];
 	if (settings.remoteEnabled !== false && shouldUseOpenAiRemoteCompaction(model)) {
 		const previousRemoteCompaction = getPreservedOpenAiRemoteCompactionData(previousPreserveData);
 		const remoteMessages = [...messagesToSummarize, ...turnPrefixMessages, ...recentMessages];
@@ -1356,7 +1396,7 @@ export async function compact(
 		firstKeptEntryId,
 		tokensBefore,
 		details: { readFiles, modifiedFiles } as CompactionDetails,
-		preserveData,
+		preserveData: withAnthropicDiscoveredToolsPreserveData(preserveData, discoveredAnthropicTools),
 	};
 }
 

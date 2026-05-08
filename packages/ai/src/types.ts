@@ -156,6 +156,12 @@ export type ToolChoice =
 // Base options all providers share
 export type CacheRetention = "none" | "short" | "long";
 
+export type ToolCacheControl = {
+	type: "ephemeral";
+	ttl?: "1h" | "5m";
+	scope?: "global" | "org";
+};
+
 /** OpenAI service tier for processing priority. Only applies to OpenAI-compatible APIs. */
 export type ServiceTier = "auto" | "default" | "flex" | "scale" | "priority";
 
@@ -200,6 +206,21 @@ export interface StreamOptions {
 	 * Optional explicit request attribution override for providers that support it.
 	 */
 	initiatorOverride?: MessageAttribution;
+	/**
+	 * When true, place Anthropic prompt-cache write markers on the last shared
+	 * prefix rather than the request tail. Used for ephemeral side-channel calls
+	 * that should read the session cache without writing their own branch tail.
+	 */
+	skipCacheWrite?: boolean;
+	/**
+	 * Claude Code query source used by Anthropic prompt-cache policy gates.
+	 * Main interactive sessions use "repl_main_thread"; subagents use "agent:<id>".
+	 */
+	querySource?: string;
+	/**
+	 * Enables Anthropic cached microcompact request shaping when supported.
+	 */
+	useCachedMicrocompact?: boolean;
 	/**
 	 * Maximum delay in milliseconds to wait for a retry when the server requests a long wait.
 	 * If the server's requested delay exceeds this value, the request fails immediately
@@ -298,6 +319,8 @@ export interface TextContent {
 	type: "text";
 	text: string;
 	textSignature?: string; // e.g., for OpenAI responses, message metadata (legacy id string or TextSignatureV1 JSON)
+	/** Anthropic-only: when set on a tool result text block, emit a tool_reference instead of text. */
+	toolReferenceName?: string;
 }
 
 export interface ThinkingContent {
@@ -391,7 +414,12 @@ export interface OpenAIResponsesHistoryPayload {
 	items: Array<Record<string, unknown>>;
 }
 
-export type ProviderPayload = OpenAIResponsesHistoryPayload;
+export interface AnthropicDiscoveredToolsPayload {
+	type: "anthropicDiscoveredTools";
+	toolNames: string[];
+}
+
+export type ProviderPayload = OpenAIResponsesHistoryPayload | AnthropicDiscoveredToolsPayload;
 
 export interface UserMessage {
 	role: "user";
@@ -507,6 +535,14 @@ export interface Tool<TParameters extends TSchema = TSchema> {
 	 * calls route correctly. Absent for regular JSON function tools.
 	 */
 	customWireName?: string;
+	/** Anthropic defer_loading marker for Claude Code-style tool search. */
+	deferLoading?: boolean;
+	/** Wire-shape alias accepted by Anthropic request conversion. */
+	defer_loading?: boolean;
+	/** Anthropic prompt-cache marker overlay for this tool schema. */
+	cacheControl?: ToolCacheControl;
+	/** Wire-shape alias accepted by Anthropic request conversion. */
+	cache_control?: ToolCacheControl;
 }
 
 export interface Context {

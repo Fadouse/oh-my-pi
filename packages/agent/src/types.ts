@@ -38,6 +38,10 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * Used by providers that support session-based caching (e.g., OpenAI Codex).
 	 */
 	sessionId?: string;
+	/**
+	 * Claude Code query source forwarded to Anthropic cache-policy gates.
+	 */
+	querySource?: string;
 
 	/**
 	 * Converts AgentMessage[] to LLM-compatible Message[] before each LLM call.

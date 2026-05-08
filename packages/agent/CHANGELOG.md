@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `querySource` on `Agent` and `AgentLoopConfig`, forwarding Claude Code query-source metadata to provider stream calls for cache-policy gates.
+- Added `cacheRetention` on `Agent`, allowing sessions to switch provider prompt-cache TTL without environment variables.
+
 ## [14.7.6] - 2026-05-07
 
 ### Added

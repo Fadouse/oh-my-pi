@@ -18,6 +18,7 @@ import {
 	isClaudeCloakingUserId,
 	mapStainlessArch,
 	mapStainlessOs,
+	SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 	streamAnthropic,
 	stripClaudeToolPrefix,
 } from "@oh-my-pi/pi-ai/providers/anthropic";
@@ -62,6 +63,27 @@ type CaptureAnthropicOptions = {
 	topP?: number;
 	topK?: number;
 	sessionId?: string;
+	cacheRetention?: "none" | "short" | "long";
+	skipCacheWrite?: boolean;
+	useCachedMicrocompact?: boolean;
+	newCacheEdits?: {
+		type: "cache_edits";
+		edits: Array<{ type: "delete"; cache_reference: string }>;
+	} | null;
+	pinnedCacheEdits?: Array<{
+		userMessageIndex: number;
+		block: {
+			type: "cache_edits";
+			edits: Array<{ type: "delete"; cache_reference: string }>;
+		};
+	}>;
+	onPinCacheEdits?: (
+		userMessageIndex: number,
+		block: {
+			type: "cache_edits";
+			edits: Array<{ type: "delete"; cache_reference: string }>;
+		},
+	) => void;
 };
 
 function captureAnthropicPayload(
@@ -81,6 +103,13 @@ function captureAnthropicPayload(
 		topP: options?.topP,
 		topK: options?.topK,
 		sessionId: options?.sessionId,
+		cacheRetention: options?.cacheRetention,
+		skipCacheWrite: options?.skipCacheWrite,
+		querySource: "repl_main_thread",
+		useCachedMicrocompact: options?.useCachedMicrocompact,
+		newCacheEdits: options?.newCacheEdits,
+		pinnedCacheEdits: options?.pinnedCacheEdits,
+		onPinCacheEdits: options?.onPinCacheEdits,
 		onPayload: payload => resolve(payload),
 	});
 	return promise;
@@ -192,7 +221,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(billingText).toContain(`cch=${computeClaudeCch(JSON.stringify(zeroedPayload))}`);
 	});
 
-	it("applies official-style system cache markers without caching billing or identity blocks", () => {
+	it("applies official-style system cache markers without caching billing blocks", () => {
 		const blocks = buildAnthropicSystemBlocks(["Stay concise."], {
 			includeClaudeCodeInstruction: true,
 			extraInstructions: ["Use citations when possible"],
@@ -204,19 +233,16 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(blocks?.[1]).toEqual({
 			type: "text",
 			text: claudeCodeSystemInstruction,
+			cache_control: { type: "ephemeral" },
 		});
 		expect(blocks?.[2]).toEqual({
 			type: "text",
-			text: "Use citations when possible",
-		});
-		expect(blocks?.[3]).toEqual({
-			type: "text",
-			text: "Stay concise.",
+			text: "Use citations when possible\n\nStay concise.",
 			cache_control: { type: "ephemeral" },
 		});
 	});
 
-	it("places the automatic Anthropic cache breakpoint on the last ordered system prompt", async () => {
+	it("places official default system cache markers on the joined durable system prompt", async () => {
 		const payload = (await captureAnthropicPayload(
 			ANTHROPIC_MODEL,
 			{
@@ -227,9 +253,371 @@ describe("Anthropic request fingerprint alignment", () => {
 		)) as { system?: Array<{ type: string; text?: string; cache_control?: unknown }> };
 
 		expect(payload.system).toEqual([
-			{ type: "text", text: "stable system" },
-			{ type: "text", text: "stable durable context", cache_control: { type: "ephemeral" } },
+			{
+				type: "text",
+				text: "stable system\n\nstable durable context",
+				cache_control: { type: "ephemeral" },
+			},
 		]);
+	});
+
+	it("caches Claude Code identity and durable system prompt when no global boundary exists", async () => {
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["stable system"],
+				messages: [{ role: "user", content: "variable context", timestamp: Date.now() }],
+			},
+			{ isOAuth: true, thinkingEnabled: false },
+		)) as { system?: Array<{ type: string; text?: string; cache_control?: unknown }> };
+
+		expect(payload.system?.[0]?.text).toStartWith("x-anthropic-billing-header:");
+		expect(payload.system?.[0]?.cache_control).toBeUndefined();
+		expect(payload.system?.[1]).toEqual({
+			type: "text",
+			text: claudeCodeSystemInstruction,
+			cache_control: { type: "ephemeral" },
+		});
+		expect(payload.system?.[2]).toEqual({
+			type: "text",
+			text: "stable system",
+			cache_control: { type: "ephemeral" },
+		});
+	});
+
+	it("uses global system cache only before the dynamic boundary", async () => {
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["static identity", SYSTEM_PROMPT_DYNAMIC_BOUNDARY, "dynamic project context"],
+				messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
+			},
+			{ isOAuth: false, cacheRetention: "long" },
+		)) as { system?: Array<{ type: string; text?: string; cache_control?: unknown }> };
+
+		expect(payload.system).toEqual([
+			{
+				type: "text",
+				text: "static identity",
+				cache_control: { type: "ephemeral", ttl: "1h", scope: "global" },
+			},
+			{ type: "text", text: "dynamic project context" },
+		]);
+	});
+
+	it("keeps global system cache when an MCP tool is deferred from the Anthropic request", async () => {
+		const deferredMcpTool = {
+			name: "mcp__deferred_tool",
+			description: "Deferred MCP tool",
+			parameters: { type: "object", properties: {} } as unknown as TSchema,
+			mcpServerName: "deferred-server",
+			deferLoading: true,
+		} as Tool & { mcpServerName: string; deferLoading: boolean };
+
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["static identity", SYSTEM_PROMPT_DYNAMIC_BOUNDARY, "dynamic project context"],
+				messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
+				tools: [deferredMcpTool],
+			},
+			{ isOAuth: false },
+		)) as { system?: Array<{ type: string; text?: string; cache_control?: unknown }> };
+
+		expect(payload.system).toEqual([
+			{
+				type: "text",
+				text: "static identity",
+				cache_control: { type: "ephemeral", scope: "global" },
+			},
+			{ type: "text", text: "dynamic project context" },
+		]);
+	});
+
+	it("uses a tool cache-control overlay when an MCP tool is rendered in the Anthropic request", async () => {
+		const renderedMcpTool = {
+			name: "mcp__rendered_tool",
+			description: "Rendered MCP tool",
+			parameters: { type: "object", properties: {} } as unknown as TSchema,
+			mcpServerName: "rendered-server",
+		} as Tool & { mcpServerName: string };
+
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["static identity", SYSTEM_PROMPT_DYNAMIC_BOUNDARY, "dynamic project context"],
+				messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
+				tools: [renderedMcpTool],
+			},
+			{ isOAuth: false },
+		)) as {
+			system?: Array<{ type: string; text?: string; cache_control?: unknown }>;
+			tools?: Array<{ name: string; cache_control?: unknown }>;
+		};
+
+		expect(payload.system).toEqual([
+			{
+				type: "text",
+				text: "static identity\n\ndynamic project context",
+				cache_control: { type: "ephemeral" },
+			},
+		]);
+		expect(payload.tools?.[0]).toMatchObject({
+			name: "mcp__rendered_tool",
+			cache_control: { type: "ephemeral" },
+		});
+	});
+
+	it("emits deferred tool schemas and tool_reference result blocks for tool search", async () => {
+		const deferredMcpTool = {
+			name: "mcp__github_create_issue",
+			description: "Create a GitHub issue",
+			parameters: { type: "object", properties: {} } as unknown as TSchema,
+			mcpServerName: "github",
+			deferLoading: true,
+		} as Tool & { mcpServerName: string; deferLoading: boolean };
+		const searchTool = {
+			name: "search_tool_bm25",
+			description: "Search tools",
+			parameters: { type: "object", properties: {} } as unknown as TSchema,
+		} satisfies Tool;
+
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["stable system"],
+				messages: [
+					{
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "toolu_search",
+								name: "search_tool_bm25",
+								arguments: { query: "github issue" },
+							},
+						],
+						api: "anthropic-messages",
+						provider: "anthropic",
+						model: ANTHROPIC_MODEL.id,
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "toolUse",
+						timestamp: Date.now(),
+					},
+					{
+						role: "toolResult",
+						toolCallId: "toolu_search",
+						toolName: "search_tool_bm25",
+						content: [{ type: "text", text: "", toolReferenceName: "mcp__github_create_issue" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+					{ role: "user", content: "Use that tool", timestamp: Date.now() },
+				],
+				tools: [searchTool, deferredMcpTool],
+			},
+			{ isOAuth: false },
+		)) as {
+			tools?: Array<{ name: string; defer_loading?: boolean }>;
+			messages?: Array<{ role: string; content: Array<{ type: string; content?: unknown }> }>;
+		};
+
+		expect(payload.tools?.map(tool => tool.name)).toEqual(["search_tool_bm25", "mcp__github_create_issue"]);
+		expect(payload.tools?.[1]).toMatchObject({ name: "mcp__github_create_issue", defer_loading: true });
+		expect(payload.messages?.[2]?.content?.[0]).toMatchObject({
+			type: "tool_result",
+			content: [{ type: "tool_reference", tool_name: "mcp__github_create_issue" }],
+		});
+	});
+
+	it("omits undiscovered deferred tool schemas until tool search returns a reference", async () => {
+		const searchTool = {
+			name: "search_tool_bm25",
+			description: "Search tools",
+			parameters: { type: "object", properties: {} } as unknown as TSchema,
+		} satisfies Tool;
+		const deferredMcpTool = {
+			name: "mcp__github_create_issue",
+			description: "Create a GitHub issue",
+			parameters: { type: "object", properties: {} } as unknown as TSchema,
+			mcpServerName: "github",
+			deferLoading: true,
+		} as Tool & { mcpServerName: string; deferLoading: boolean };
+
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["stable system"],
+				messages: [{ role: "user", content: "Find a GitHub tool", timestamp: Date.now() }],
+				tools: [searchTool, deferredMcpTool],
+			},
+			{ isOAuth: false },
+		)) as { tools?: Array<{ name: string; defer_loading?: boolean }> };
+
+		expect(payload.tools?.map(tool => tool.name)).toEqual(["search_tool_bm25"]);
+		expect(payload.tools?.some(tool => tool.defer_loading === true)).toBe(false);
+	});
+
+	it("uses compact-carried discovered tool references after tool-reference history is summarized", async () => {
+		const searchTool = {
+			name: "search_tool_bm25",
+			description: "Search tools",
+			parameters: { type: "object", properties: {} } as unknown as TSchema,
+		} satisfies Tool;
+		const deferredMcpTool = {
+			name: "mcp__github_create_issue",
+			description: "Create a GitHub issue",
+			parameters: { type: "object", properties: {} } as unknown as TSchema,
+			mcpServerName: "github",
+			deferLoading: true,
+		} as Tool & { mcpServerName: string; deferLoading: boolean };
+
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["stable system"],
+				messages: [
+					{
+						role: "user",
+						content: "Previous context summarized.",
+						providerPayload: {
+							type: "anthropicDiscoveredTools",
+							toolNames: ["mcp__github_create_issue"],
+						},
+						timestamp: Date.now(),
+					},
+					{ role: "user", content: "Use the discovered tool", timestamp: Date.now() },
+				],
+				tools: [searchTool, deferredMcpTool],
+			},
+			{ isOAuth: false },
+		)) as { tools?: Array<{ name: string; defer_loading?: boolean }> };
+
+		expect(payload.tools?.map(tool => tool.name)).toEqual(["search_tool_bm25", "mcp__github_create_issue"]);
+		expect(payload.tools?.[1]).toMatchObject({ name: "mcp__github_create_issue", defer_loading: true });
+	});
+
+	it("disables auto tool search below the official character threshold", async () => {
+		await withEnv({ ENABLE_TOOL_SEARCH: "auto:100" }, async () => {
+			const searchTool = {
+				name: "search_tool_bm25",
+				description: "Search tools",
+				parameters: { type: "object", properties: {} } as unknown as TSchema,
+			} satisfies Tool;
+			const deferredMcpTool = {
+				name: "mcp__github_create_issue",
+				description: "Create a GitHub issue",
+				parameters: { type: "object", properties: {} } as unknown as TSchema,
+				mcpServerName: "github",
+				deferLoading: true,
+			} as Tool & { mcpServerName: string; deferLoading: boolean };
+
+			const payload = (await captureAnthropicPayload(
+				ANTHROPIC_MODEL,
+				{
+					systemPrompt: ["stable system"],
+					messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
+					tools: [searchTool, deferredMcpTool],
+				},
+				{ isOAuth: false },
+			)) as { tools?: Array<{ name: string; defer_loading?: boolean }> };
+
+			expect(payload.tools?.map(tool => tool.name)).toEqual(["search_tool_bm25", "mcp__github_create_issue"]);
+			expect(payload.tools?.some(tool => tool.defer_loading === true)).toBe(false);
+		});
+	});
+
+	it("applies explicit tool cache-control without mutating deferred tool-search schemas", async () => {
+		const explicitTool = {
+			name: "read",
+			description: "Read files",
+			parameters: { type: "object", properties: {} } as unknown as TSchema,
+			cacheControl: { type: "ephemeral" as const, ttl: "5m" as const },
+		} satisfies Tool;
+		const deferredMcpTool = {
+			name: "mcp__github_create_issue",
+			description: "Create a GitHub issue",
+			parameters: { type: "object", properties: {} } as unknown as TSchema,
+			mcpServerName: "github",
+			deferLoading: true,
+		} as Tool & { mcpServerName: string; deferLoading: boolean };
+		const searchTool = {
+			name: "search_tool_bm25",
+			description: "Search tools",
+			parameters: { type: "object", properties: {} } as unknown as TSchema,
+		} satisfies Tool;
+
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["stable system"],
+				messages: [
+					{
+						role: "toolResult",
+						toolCallId: "toolu_search",
+						toolName: "search_tool_bm25",
+						content: [{ type: "text", text: "", toolReferenceName: "mcp__github_create_issue" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+					{ role: "user", content: "hello", timestamp: Date.now() },
+				],
+				tools: [explicitTool, searchTool, deferredMcpTool],
+			},
+			{ isOAuth: false },
+		)) as { tools?: Array<{ name: string; cache_control?: unknown; defer_loading?: boolean }> };
+
+		expect(payload.tools?.[0]).toMatchObject({
+			name: "read",
+			cache_control: { type: "ephemeral", ttl: "5m" },
+		});
+		expect(payload.tools?.[2]).toMatchObject({
+			name: "mcp__github_create_issue",
+			defer_loading: true,
+		});
+		expect(payload.tools?.[2]?.cache_control).toBeUndefined();
+	});
+
+	it("strips tool_reference blocks when tool search is unavailable", async () => {
+		const deferredMcpTool = {
+			name: "mcp__github_create_issue",
+			description: "Create a GitHub issue",
+			parameters: { type: "object", properties: {} } as unknown as TSchema,
+			mcpServerName: "github",
+			deferLoading: true,
+		} as Tool & { mcpServerName: string; deferLoading: boolean };
+
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["stable system"],
+				messages: [
+					{
+						role: "toolResult",
+						toolCallId: "toolu_search",
+						toolName: "search_tool_bm25",
+						content: [{ type: "text", text: "", toolReferenceName: "mcp__github_create_issue" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+					{ role: "user", content: "hello", timestamp: Date.now() },
+				],
+				tools: [deferredMcpTool],
+			},
+			{ isOAuth: false },
+		)) as { messages?: Array<{ role: string; content: Array<{ type: string; content?: unknown }> }> };
+
+		expect(payload.messages?.[0]?.content?.[0]).toMatchObject({
+			type: "tool_result",
+			content: [{ type: "text", text: "[Tool references removed - tool search not enabled]" }],
+		});
 	});
 
 	it("orders Anthropic OAuth body fields like the official beta messages client", async () => {
@@ -288,7 +676,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		}
 	});
 
-	it("uses a single last-message cache marker and adds cache_reference to earlier tool results", async () => {
+	it("uses a single last-message cache marker without cache_reference in ordinary prompt caching", async () => {
 		const payload = (await captureAnthropicPayload(
 			ANTHROPIC_MODEL,
 			{
@@ -339,7 +727,7 @@ describe("Anthropic request fingerprint alignment", () => {
 					},
 				],
 			},
-			{ isOAuth: false },
+			{ isOAuth: true },
 		)) as {
 			messages?: Array<{
 				role: string;
@@ -355,13 +743,181 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.messages?.at(-1)?.content.at(-1)?.cache_control).toEqual({ type: "ephemeral" });
 		const toolResultBlock = payload.messages?.[2]?.content?.[0];
 		expect(toolResultBlock?.tool_use_id).toBe("call_1");
-		expect(toolResultBlock?.cache_reference).toBe("call_1");
+		expect(toolResultBlock?.cache_reference).toBeUndefined();
 		expect(
 			payload.messages
 				?.slice(0, -1)
 				.flatMap(message => message.content)
 				.filter(block => block.cache_control != null),
 		).toHaveLength(0);
+	});
+
+	it("matches Claude Code cached microcompact cache_edits and cache_reference placement", async () => {
+		const pinnedBlock = {
+			type: "cache_edits" as const,
+			edits: [{ type: "delete" as const, cache_reference: "old_tool" }],
+		};
+		const newBlock = {
+			type: "cache_edits" as const,
+			edits: [
+				{ type: "delete" as const, cache_reference: "old_tool" },
+				{ type: "delete" as const, cache_reference: "call_1" },
+			],
+		};
+		const pinned: Array<{ userMessageIndex: number; block: typeof newBlock }> = [];
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				messages: [
+					{ role: "user", content: "Open the file", timestamp: Date.now() },
+					{
+						role: "assistant",
+						content: [{ type: "toolCall", id: "call_1", name: "read", arguments: { path: "a.ts" } }],
+						api: "anthropic-messages",
+						provider: "anthropic",
+						model: ANTHROPIC_MODEL.id,
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "toolUse",
+						timestamp: Date.now(),
+					},
+					{
+						role: "toolResult",
+						toolCallId: "call_1",
+						toolName: "read",
+						content: [{ type: "text", text: "file contents" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+					{ role: "user", content: "Summarize the file", timestamp: Date.now() },
+				],
+			},
+			{
+				isOAuth: true,
+				useCachedMicrocompact: true,
+				pinnedCacheEdits: [{ userMessageIndex: 2, block: pinnedBlock }],
+				newCacheEdits: newBlock,
+				onPinCacheEdits: (userMessageIndex, block) => pinned.push({ userMessageIndex, block }),
+			},
+		)) as {
+			messages?: Array<{
+				role: string;
+				content: Array<{
+					type: string;
+					cache_control?: unknown;
+					cache_reference?: string;
+					tool_use_id?: string;
+					edits?: Array<{ type: string; cache_reference: string }>;
+					text?: string;
+				}>;
+			}>;
+		};
+
+		expect(payload.messages?.at(-1)?.content.at(-1)?.cache_control).toEqual({ type: "ephemeral" });
+		const userToolResultContent = payload.messages?.[2]?.content;
+		expect(userToolResultContent?.[0]).toMatchObject({
+			type: "tool_result",
+			tool_use_id: "call_1",
+			cache_reference: "call_1",
+		});
+		expect(userToolResultContent?.[1]).toEqual(pinnedBlock);
+		expect(userToolResultContent?.[2]).toEqual({ type: "text", text: "." });
+		expect(payload.messages?.[3]?.content?.[0]).toEqual({
+			type: "cache_edits",
+			edits: [{ type: "delete", cache_reference: "call_1" }],
+		});
+		expect(payload.messages?.[3]?.content?.[1]).toMatchObject({
+			type: "text",
+			text: "Summarize the file",
+			cache_control: { type: "ephemeral" },
+		});
+		expect(pinned).toEqual([{ userMessageIndex: 3, block: newBlock }]);
+	});
+
+	it("uses the second-to-last message marker when cache writes are skipped", async () => {
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				messages: [
+					{ role: "user", content: "Original request", timestamp: Date.now() },
+					{
+						role: "assistant",
+						content: [{ type: "text", text: "Shared answer prefix." }],
+						api: "anthropic-messages",
+						provider: "anthropic",
+						model: ANTHROPIC_MODEL.id,
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "stop",
+						timestamp: Date.now(),
+					},
+					{ role: "user", content: "Ephemeral side question", timestamp: Date.now() },
+				],
+			},
+			{ isOAuth: false, skipCacheWrite: true },
+		)) as {
+			messages?: Array<{
+				content: Array<{ cache_control?: unknown }>;
+			}>;
+		};
+
+		expect(payload.messages?.[1]?.content.at(-1)?.cache_control).toEqual({ type: "ephemeral" });
+		expect(payload.messages?.[2]?.content.at(-1)?.cache_control).toBeUndefined();
+	});
+
+	it("does not move a skipped cache-write marker off assistant thinking tails", async () => {
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				messages: [
+					{ role: "user", content: "Original request", timestamp: Date.now() },
+					{
+						role: "assistant",
+						content: [
+							{ type: "text", text: "Shared answer prefix." },
+							{ type: "redactedThinking", data: "encrypted-thinking" },
+						],
+						api: "anthropic-messages",
+						provider: "anthropic",
+						model: ANTHROPIC_MODEL.id,
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "stop",
+						timestamp: Date.now(),
+					},
+					{ role: "user", content: "Ephemeral side question", timestamp: Date.now() },
+				],
+			},
+			{ isOAuth: false, skipCacheWrite: true },
+		)) as {
+			messages?: Array<{
+				content: string | Array<{ cache_control?: unknown }>;
+			}>;
+		};
+
+		const messageCacheControls =
+			payload.messages?.flatMap(message =>
+				Array.isArray(message.content) ? message.content.filter(block => block.cache_control != null) : [],
+			) ?? [];
+		expect(messageCacheControls).toHaveLength(0);
 	});
 
 	it("uses Bearer auth for non-Anthropic API bases with api-key credentials", () => {

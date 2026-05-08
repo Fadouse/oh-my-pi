@@ -869,6 +869,7 @@ export class TaskTool implements AgentTool<TSchema, TaskToolDetails, Theme> {
 						promptTemplates,
 						localProtocolOptions,
 						parentHindsightSessionState: this.session.getHindsightSessionState?.(),
+						providerSessionId: this.session.getSessionId?.() ?? undefined,
 					});
 				}
 
@@ -926,6 +927,7 @@ export class TaskTool implements AgentTool<TSchema, TaskToolDetails, Theme> {
 						promptTemplates,
 						localProtocolOptions,
 						parentHindsightSessionState: this.session.getHindsightSessionState?.(),
+						providerSessionId: this.session.getSessionId?.() ?? undefined,
 					});
 					if (mergeMode === "branch" && result.exitCode === 0) {
 						try {

@@ -169,6 +169,8 @@ export interface ExecutorOptions {
 	/** Override local:// protocol options so subagent shares parent's local:// root */
 	localProtocolOptions?: LocalProtocolOptions;
 	parentHindsightSessionState?: HindsightSessionState;
+	/** Provider-facing session id for auth affinity and prompt-cache reuse. */
+	providerSessionId?: string;
 }
 
 function parseStringifiedJson(value: unknown): unknown {
@@ -998,6 +1000,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				mcpManager: options.mcpManager,
 				customTools: mcpProxyTools.length > 0 ? mcpProxyTools : undefined,
 				localProtocolOptions: options.localProtocolOptions,
+				providerSessionId: options.providerSessionId,
 			});
 
 			activeSession = session;
