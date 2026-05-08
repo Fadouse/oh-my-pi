@@ -1,7 +1,7 @@
 import type { ImageContent, TextContent, ToolCall } from "@oh-my-pi/pi-ai";
 import type { ReadonlySessionManager, SessionEntry, SessionTreeNode } from "../session/session-manager";
 
-const INTERNAL_TOOLS = new Set(["context_tag", "context_log", "context_checkout", "context_status"]);
+const INTERNAL_TOOLS = new Set(["context_tag", "context_log", "context_search", "context_checkout", "context_status"]);
 
 export const isInternalTool = (name: string): boolean => INTERNAL_TOOLS.has(name);
 

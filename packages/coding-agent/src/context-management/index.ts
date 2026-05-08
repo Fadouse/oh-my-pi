@@ -8,6 +8,7 @@ import contextManagementSystemPrompt from "./prompts/system.md" with { type: "te
 import { clearSession, type PendingCheckout, peekNudgeState, peekPending, setNudgeState, takePending } from "./state";
 import { createContextCheckoutTool } from "./tools/context-checkout";
 import { createContextLogTool } from "./tools/context-log";
+import { createContextSearchTool } from "./tools/context-search";
 import { createContextStatusTool, getHealthThresholds } from "./tools/context-status";
 import { createContextTagTool } from "./tools/context-tag";
 
@@ -23,6 +24,7 @@ export const createContextManagementExtensionWithSettings = (
 
 	api.registerTool(createContextTagTool(api));
 	api.registerTool(createContextLogTool(runtimeSettings));
+	api.registerTool(createContextSearchTool(runtimeSettings));
 	api.registerTool(createContextCheckoutTool(api, runtimeSettings));
 	api.registerTool(createContextStatusTool(runtimeSettings));
 

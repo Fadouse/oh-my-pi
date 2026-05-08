@@ -35,7 +35,13 @@ describe("context-management settings gate", () => {
 		tempDirs.push(tempDir);
 		try {
 			expect(session.getAllToolNames()).toEqual(
-				expect.arrayContaining(["context_tag", "context_log", "context_checkout", "context_status"]),
+				expect.arrayContaining([
+					"context_tag",
+					"context_log",
+					"context_search",
+					"context_checkout",
+					"context_status",
+				]),
 			);
 		} finally {
 			await session.dispose();
@@ -52,6 +58,7 @@ describe("context-management settings gate", () => {
 		expect(result?.systemPrompt?.[0]).toContain("base prompt");
 		expect(result?.systemPrompt?.[0]).toContain("<context-management>");
 		expect(result?.systemPrompt?.[0]).toContain("context_tag");
+		expect(result?.systemPrompt?.[0]).toContain("context_search");
 		expect(result?.systemPrompt?.[0]).toContain("context_checkout");
 		expect(on.sentMessages).toHaveLength(0);
 	});
