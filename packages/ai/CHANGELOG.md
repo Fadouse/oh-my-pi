@@ -6,6 +6,26 @@
 
 - Aligned Anthropic OAuth request fingerprinting, prompt-caching markers/scopes, and Claude Code headers with `opencode-claude-auth`, including deterministic billing suffixes, final-body CCH signing, official Claude Code identity text, `mcp_` PascalCase tool names, OMP-managed Claude Code-style JSON metadata identity persisted at Anthropic OAuth login/refresh, unified request/session IDs, official Claude Code OAuth endpoints/scopes, updated beta flags, and current Stainless package defaults.
 
+## [14.7.6] - 2026-05-07
+
+### Added
+
+- Added `hideThinkingSummary` option to `SimpleStreamOptions`. When true, `streamSimple` requests that the underlying provider omit reasoning/thinking summaries: Anthropic receives `thinking.display = "omitted"` (where supported), and OpenAI Responses / Azure / Codex providers leave `reasoning.summary` unset so the server skips emitting the human-readable summary stream entirely.
+
+### Changed
+
+- Changed OpenAI Responses, Azure OpenAI Responses, and OpenAI Codex providers to omit `reasoning.summary` from requests when `reasoningSummary` is explicitly `null` (previously fell back to `"auto"`).
+## [14.7.5] - 2026-05-07
+
+### Added
+
+- Added `OpenAICompat.supportsMultipleSystemMessages` so chat-completions hosts can opt out of separate leading system blocks. Auto-detected as `true` for OpenAI, Azure, OpenRouter, Cerebras, Together, Fireworks, Groq, DeepSeek, Mistral, xAI, Z.ai, GitHub Copilot, and Zenmux; `false` for MiniMax, Alibaba Dashscope, and Qwen Portal whose chat templates reject follow-up system messages. Unknown OpenAI-compatible hosts (custom vLLM/local) default to `false`; users can opt back in via `compat.supportsMultipleSystemMessages: true`.
+
+### Fixed
+
+- Fixed strict-template OpenAI-compatible hosts (e.g. Qwen 3.5+ via vLLM, MiniMax) rejecting follow-up `system`/`developer` messages by coalescing ordered system prompts into a single block joined by `\n\n` when `compat.supportsMultipleSystemMessages` is false. Canonical hosts continue to receive separate blocks so KV-cache reuse stays effective when only the trailing prompt changes ([#958](https://github.com/can1357/oh-my-pi/issues/958)).
+
+
 ## [14.7.2] - 2026-05-06
 
 ### Fixed

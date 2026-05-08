@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [14.7.6] - 2026-05-07
+### Changed
+
+- Changed the "Hide Thinking Blocks" setting (Ctrl+T) to also instruct the provider to omit thinking/reasoning summaries from responses, instead of just hiding them client-side. Anthropic sees `thinking.display = "omitted"` (where supported); OpenAI Responses / Azure / Codex requests drop `reasoning.summary` entirely.
+
+### Fixed
+
+- Fixed the `Hide Thinking Blocks` toggle so changing it updates the active session’s request settings immediately, ensuring new responses reflect the current hide-thinking preference
+- Fixed system prompt preparation to keep successful context data and only fall back to minimal defaults for preparation steps that fail
+- Fixed system prompt preparation timeout to apply per-step instead of all-or-nothing: a single slow step (e.g. `buildAgentsMdSearch` on a huge directory tree, `buildWorkspaceTree`, `loadProjectContextFiles`) now falls back to its own minimal default while the other steps still populate, and the warning names which steps timed out.
+- Fixed subagents re-running expensive workspace scans (`buildAgentsMdSearch`, `buildWorkspaceTree`) on every spawn: parents now forward their already-resolved `AGENTS.md` search and workspace tree to subagents through `createAgentSession`, matching how `contextFiles`, `skills`, and `promptTemplates` are already inherited. On large monorepos this removes seconds of redundant work per `task` invocation and prevents the per-subagent system-prompt timeout warnings.
+
+## [14.7.5] - 2026-05-07
+### Added
+
+- Added optional `/loop` limits: `/loop 10` stops after 10 auto-iterations, while duration forms such as `/loop 10m` and `/loop 10min` stop after the time limit.
+
+### Changed
+
+- Changed `/loop` to include the configured limit and remaining budget in the enabled status message
+
+### Fixed
+
+- Fixed `/loop` handling of malformed count or duration arguments by showing usage errors instead of enabling unbounded loop mode
+- Fixed inherited disabled macOS malloc stack logging variables leaking into shell sessions and spamming Bun subprocess output with `MallocStackLogging` warnings.
+
 ## [14.7.4] - 2026-05-07
 
 ### Breaking Changes
