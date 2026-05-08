@@ -129,7 +129,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(headers["Anthropic-Beta"]).toContain("advisor-tool-2026-03-01");
 		expect(headers["Anthropic-Beta"]).not.toContain("fine-grained-tool-streaming-2025-05-14");
 		expect(headers["User-Agent"]).toBe(`claude-cli/${claudeCodeVersion} (external, cli)`);
-		expect(headers.Accept).toBe("application/json");
+		expect(headers.Accept).toBe("text/event-stream");
 		expect(headers["x-client-request-id"]).toMatch(/^[0-9a-f-]{36}$/);
 		expect(headers["X-Claude-Code-Session-Id"]).toMatch(/^[0-9a-f-]{36}$/);
 		expect(claudeCodeHeaders["X-Stainless-Package-Version"]).toBe("0.81.0");
@@ -334,7 +334,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		]);
 	});
 
-	it("uses a tool cache-control overlay when an MCP tool is rendered in the Anthropic request", async () => {
+	it("does not add implicit tool cache-control when an MCP tool is rendered in the Anthropic request", async () => {
 		const renderedMcpTool = {
 			name: "mcp__rendered_tool",
 			description: "Rendered MCP tool",
@@ -364,8 +364,9 @@ describe("Anthropic request fingerprint alignment", () => {
 		]);
 		expect(payload.tools?.[0]).toMatchObject({
 			name: "mcp__rendered_tool",
-			cache_control: { type: "ephemeral" },
+			description: "Rendered MCP tool",
 		});
+		expect(payload.tools?.[0]?.cache_control).toBeUndefined();
 	});
 
 	it("emits deferred tool schemas and tool_reference result blocks for tool search", async () => {
@@ -639,6 +640,31 @@ describe("Anthropic request fingerprint alignment", () => {
 			"thinking",
 			"stream",
 		]);
+	});
+
+	it("emits context management for cacheable thinking requests", async () => {
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["Stay concise."],
+				messages: [{ role: "user", content: "solve carefully", timestamp: Date.now() }],
+			},
+			{ isOAuth: true, thinkingEnabled: true },
+		)) as Record<string, unknown>;
+
+		expect(Object.keys(payload)).toEqual([
+			"model",
+			"messages",
+			"system",
+			"metadata",
+			"max_tokens",
+			"thinking",
+			"context_management",
+			"stream",
+		]);
+		expect(payload.context_management).toEqual({
+			edits: [{ type: "clear_thinking_20251015", keep: "all" }],
+		});
 	});
 
 	it("sends OAuth streams through the beta messages endpoint", async () => {

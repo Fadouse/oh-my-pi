@@ -12,6 +12,7 @@
 ### Fixed
 
 - Matched Claude Code Anthropic prompt-cache request shaping for system splits, message markers, cached microcompact `cache_edits`/`cache_reference` placement, omitted ordinary `tool_result.cache_reference` fields, omitted explicit `scope: "org"` cache controls, assistant thinking-tail marker handling, query-source propagation, and MCP deferred-tool global-cache gating.
+- Fixed Anthropic OAuth request shaping to avoid implicit tool-schema cache markers, emit API context-management edits for cacheable thinking requests, and use `text/event-stream` Accept headers for streaming calls.
 
 ## [14.7.6] - 2026-05-07
 

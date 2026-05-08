@@ -181,7 +181,7 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 	const extraBetas = options.extraBetas ?? [];
 	const stream = options.stream ?? false;
 	const betaHeader = buildBetaHeader(getClaudeCodeBetas(options.modelId, extraBetas), []);
-	const acceptHeader = oauthToken ? "application/json" : stream ? "text/event-stream" : "application/json";
+	const acceptHeader = stream ? "text/event-stream" : "application/json";
 	const modelHeaders = Object.fromEntries(
 		Object.entries(options.modelHeaders ?? {}).filter(([key]) => !enforcedHeaderKeys.has(key.toLowerCase())),
 	);
@@ -259,9 +259,17 @@ type AnthropicCachePolicy = {
 	skipGlobalCacheForSystemPrompt: boolean;
 };
 
+type AnthropicContextManagementConfig = {
+	edits: Array<{
+		type: "clear_thinking_20251015";
+		keep: "all" | { type: "thinking_turns"; value: number };
+	}>;
+};
+
 type AnthropicSamplingParams = MessageCreateParamsStreaming & {
 	top_p?: number;
 	top_k?: number;
+	context_management?: AnthropicContextManagementConfig;
 };
 
 function getPromptCachingEnabled(modelId: string): boolean {
@@ -2279,6 +2287,7 @@ function orderAnthropicRequestParams(params: AnthropicSamplingParams): MessageCr
 		top_p,
 		top_k,
 		output_config,
+		context_management,
 		stream,
 		...rest
 	} = params;
@@ -2293,6 +2302,7 @@ function orderAnthropicRequestParams(params: AnthropicSamplingParams): MessageCr
 	if (top_p !== undefined) ordered.top_p = top_p;
 	if (top_k !== undefined) ordered.top_k = top_k;
 	if (output_config !== undefined) ordered.output_config = output_config;
+	if (context_management !== undefined) ordered.context_management = context_management;
 	Object.assign(ordered, rest);
 	if (stream !== undefined) ordered.stream = stream;
 	return ordered as AnthropicSamplingParams;
@@ -2312,15 +2322,33 @@ function isDeferredFromAnthropicRequest(tool: Tool): boolean {
 	return metadata.deferLoading === true || metadata.defer_loading === true;
 }
 
-function findToolCacheControlOverlayIndex(tools: Tool[]): number {
-	for (let index = tools.length - 1; index >= 0; index--) {
-		if (!isDeferredFromAnthropicRequest(tools[index]!)) return index;
-	}
-	return -1;
-}
 
 function modelSupportsToolReference(modelId: string): boolean {
 	return !modelId.toLowerCase().includes("haiku");
+}
+
+function hasRedactedThinkingBlocks(messages: Message[]): boolean {
+	for (const message of messages) {
+		if (message.role !== "assistant") continue;
+		if (message.content.some(block => block.type === "redactedThinking")) return true;
+	}
+	return false;
+}
+
+function getApiContextManagement(options: {
+	cachePolicy: AnthropicCachePolicy;
+	hasThinking: boolean;
+	hasRedactedThinking: boolean;
+}): AnthropicContextManagementConfig | undefined {
+	if (!options.cachePolicy.enabled || !options.hasThinking || options.hasRedactedThinking) return undefined;
+	return {
+		edits: [
+			{
+				type: "clear_thinking_20251015",
+				keep: "all",
+			},
+		],
+	};
 }
 
 function isToolSearchTool(tool: Tool): boolean {
@@ -2527,7 +2555,6 @@ function buildParams(
 			isOAuthToken,
 			disableStrictTools || model.provider === "github-copilot",
 			getAnthropicCompat(model).supportsEagerToolInputStreaming,
-			skipGlobalCacheForSystemPrompt ? createCacheControl(cachePolicy) : undefined,
 			useToolSearch,
 		);
 	}
@@ -2568,6 +2595,16 @@ function buildParams(
 		} else if (options?.thinkingEnabled === false) {
 			params.thinking = { type: "disabled" };
 		}
+	}
+
+	const hasThinking = params.thinking !== undefined && params.thinking.type !== "disabled";
+	const contextManagement = getApiContextManagement({
+		cachePolicy,
+		hasThinking,
+		hasRedactedThinking: hasRedactedThinkingBlocks(requestMessages),
+	});
+	if (contextManagement) {
+		params.context_management = contextManagement;
 	}
 
 	const metadataUserId = resolveAnthropicMetadataUserId(options?.metadata?.user_id, isOAuthToken, options?.sessionId);
@@ -3134,20 +3171,15 @@ function convertTools(
 	isOAuthToken: boolean,
 	disableStrictTools = false,
 	supportsEagerToolInputStreaming = true,
-	toolCacheControl?: AnthropicCacheControl,
 	toolSearchEnabled = true,
 ): Anthropic.Messages.Tool[] {
 	if (!tools) return [];
 	const schemaPlans = buildAnthropicToolSchemaPlans(tools, disableStrictTools);
-	const toolCacheControlOverlayIndex = toolCacheControl ? findToolCacheControlOverlayIndex(tools) : -1;
 
 	return tools.map((tool, index) => {
 		const plan = schemaPlans[index];
 		const deferLoading = toolSearchEnabled && (tool.deferLoading === true || tool.defer_loading === true);
-		const cacheControl =
-			tool.cacheControl ??
-			tool.cache_control ??
-			(index === toolCacheControlOverlayIndex ? toolCacheControl : undefined);
+		const cacheControl = tool.cacheControl ?? tool.cache_control;
 		return {
 			name: isOAuthToken ? applyClaudeToolPrefix(tool.name) : tool.name,
 			description: tool.description || "",
