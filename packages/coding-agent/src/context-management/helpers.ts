@@ -1,7 +1,7 @@
 import type { ImageContent, TextContent, ToolCall } from "@oh-my-pi/pi-ai";
 import type { ReadonlySessionManager, SessionEntry, SessionTreeNode } from "../session/session-manager";
 
-const INTERNAL_TOOLS = new Set(["context_tag", "context_log", "context_checkout"]);
+const INTERNAL_TOOLS = new Set(["context_tag", "context_log", "context_checkout", "context_status"]);
 
 export const isInternalTool = (name: string): boolean => INTERNAL_TOOLS.has(name);
 
@@ -111,6 +111,32 @@ export function isAssistantInternalToolOnly(entry: SessionEntry): boolean {
 	return !hasText && toolCalls.every(toolCall => isInternalTool(toolCall.name));
 }
 
+export function recentToolResultDensity(branch: SessionEntry[], windowSize: number): number {
+	const recent = branch.slice(-Math.max(0, windowSize));
+	if (recent.length === 0) return 0;
+	const toolResults = recent.filter(entry => entry.type === "message" && entry.message.role === "toolResult");
+	return toolResults.length / recent.length;
+}
+
+export function consecutiveTrailingErrors(branch: SessionEntry[]): number {
+	let count = 0;
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i];
+		if (entry.type !== "message") continue;
+		if (entry.message.role !== "toolResult") break;
+		if (!entry.message.isError) break;
+		count++;
+	}
+	return count;
+}
+
+export function turnsSinceUserMilestone(branch: SessionEntry[]): number {
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i];
+		if (entry.type === "message" && entry.message.role === "user") return branch.length - 1 - i;
+	}
+	return branch.length;
+}
 export function normalizePreview(text: string, maxLength = 100): string {
 	const compact = text.replace(/\s+/g, " ").trim();
 	return compact.length > maxLength ? `${compact.slice(0, maxLength)}...` : compact;

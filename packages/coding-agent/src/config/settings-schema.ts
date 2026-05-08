@@ -1115,6 +1115,46 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"contextManagement.nudges": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			label: "ACM Nudges",
+			description: "Inject hidden context-management reminders when health degrades.",
+		},
+	},
+
+	"contextManagement.checkout.strictSchema": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			label: "Strict Checkout Schema",
+			description:
+				"Reject context_checkout when message is missing required sections (Reason, Next Step, Important Changes/Files Touched).",
+		},
+	},
+
+	"contextManagement.todoCoupling": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			label: "ACM Todo Coupling",
+			description: "Snapshot open todos in branch summaries and surface them in context_log.",
+		},
+	},
+
+	"contextManagement.thresholds.usageWarn": { type: "number", default: 50 },
+	"contextManagement.thresholds.usageUrge": { type: "number", default: 70 },
+	"contextManagement.thresholds.stepsWarn": { type: "number", default: 20 },
+	"contextManagement.thresholds.stepsUrge": { type: "number", default: 35 },
+	"contextManagement.thresholds.densityWarn": { type: "number", default: 0.6 },
+	"contextManagement.thresholds.densityUrge": { type: "number", default: 0.8 },
+	"contextManagement.thresholds.errorsUrge": { type: "number", default: 3 },
+	"contextManagement.nudges.cooldownTurns": { type: "number", default: 3 },
+
 	// Memories
 	// Legacy local-memory enable flag kept only for back-compat migration.
 	// Hidden from UI — users should use `memory.backend` instead.

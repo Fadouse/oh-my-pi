@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createContextLogTool } from "@oh-my-pi/pi-coding-agent/context-management/tools/context-log";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { assistantText, makeContext, toolResult, user } from "./test-utils";
+import { assistantText, makeContext, todoPhasesMessage, toolResult, user } from "./test-utils";
 
 describe("context_log", () => {
 	it("renders markers, tag metadata, hidden gaps, and usage HUD", async () => {
@@ -17,6 +17,7 @@ describe("context_log", () => {
 		const result = await tool.execute("call", { verbose: false }, undefined, undefined, ctx);
 		const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 		expect(text).toContain("• Context Usage:    15.0% (1.5k/10k)");
+		expect(text).toContain("• Recommendation:   ok");
 		expect(text).toContain(`• ${root} (ROOT, tag: task-start) [USER] root task`);
 		expect(text).toContain("  :  ... (2 hidden messages) ...");
 		expect(text).toContain("* ");
@@ -48,5 +49,28 @@ describe("context_log", () => {
 		const result = await createContextLogTool().execute("call", {}, undefined, undefined, makeContext(session));
 		const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 		expect(text).toContain("• Context Usage:    Unknown");
+	});
+
+	it("renders open todos in dashboard", async () => {
+		const session = SessionManager.inMemory();
+		session.appendMessage(user("root", 1));
+		session.appendMessage(
+			todoPhasesMessage(
+				[
+					{
+						name: "Implementation",
+						tasks: [
+							{ content: "finish tool wiring", status: "in_progress" },
+							{ content: "run tests", status: "pending" },
+						],
+					},
+				],
+				2,
+			),
+		);
+		const result = await createContextLogTool().execute("call", {}, undefined, undefined, makeContext(session));
+		const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+		expect(text).toContain("• Open todos:       Implementation 1 in_progress, 1 pending");
+		expect(result.details?.health.openTodos).toEqual([{ phase: "Implementation", pending: 1, inProgress: 1 }]);
 	});
 });

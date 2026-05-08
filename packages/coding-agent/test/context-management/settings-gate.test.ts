@@ -35,7 +35,7 @@ describe("context-management settings gate", () => {
 		tempDirs.push(tempDir);
 		try {
 			expect(session.getAllToolNames()).toEqual(
-				expect.arrayContaining(["context_tag", "context_log", "context_checkout"]),
+				expect.arrayContaining(["context_tag", "context_log", "context_checkout", "context_status"]),
 			);
 		} finally {
 			await session.dispose();
@@ -54,6 +54,19 @@ describe("context-management settings gate", () => {
 		expect(result?.systemPrompt?.[0]).toContain("context_tag");
 		expect(result?.systemPrompt?.[0]).toContain("context_checkout");
 		expect(on.sentMessages).toHaveLength(0);
+	});
+
+	it("keeps tools registered when nudges are disabled", async () => {
+		const harness = createSystemPromptHarness(true, {
+			"contextManagement.nudges": false,
+			"contextManagement.thresholds.stepsWarn": 1,
+		});
+		const session = SessionManager.inMemory();
+		session.appendMessage({ role: "user", content: "one", timestamp: 1 });
+		session.appendMessage({ role: "user", content: "two", timestamp: 2 });
+		const result = await harness.emitBeforeAgentStart(["base prompt"], session);
+		expect(result?.systemPrompt?.[0]).toContain("context_status");
+		expect(result?.message).toBeUndefined();
 	});
 });
 
@@ -77,7 +90,7 @@ async function createSdkSession(enabled: boolean) {
 	return { session: result.session, tempDir };
 }
 
-function createSystemPromptHarness(enabled: boolean) {
+function createSystemPromptHarness(enabled: boolean, overrides: Record<string, unknown> = {}) {
 	const handlers: ExtensionHandler<unknown>[] = [];
 	const sentMessages: unknown[] = [];
 	const api = {
@@ -88,16 +101,19 @@ function createSystemPromptHarness(enabled: boolean) {
 		setLabel: () => {},
 		sendMessage: (message: unknown, options: unknown) => sentMessages.push({ message, options }),
 	} as unknown as ExtensionAPI;
-	createContextManagementExtensionWithSettings(api, Settings.isolated({ "contextManagement.enabled": enabled }));
+	createContextManagementExtensionWithSettings(
+		api,
+		Settings.isolated({ "contextManagement.enabled": enabled, ...overrides }),
+	);
 	return {
 		sentMessages,
-		emitBeforeAgentStart: async (systemPrompt: string[]) => {
-			let result: { systemPrompt?: string[] } | undefined;
+		emitBeforeAgentStart: async (systemPrompt: string[], session = SessionManager.inMemory()) => {
+			let result: { systemPrompt?: string[]; message?: unknown } | undefined;
 			for (const handler of handlers) {
 				const next = (await handler(
 					{ type: "before_agent_start", prompt: "hello", systemPrompt },
-					makeContext(SessionManager.inMemory()),
-				)) as { systemPrompt?: string[] } | undefined;
+					makeContext(session),
+				)) as { systemPrompt?: string[]; message?: unknown } | undefined;
 				if (next?.systemPrompt) result = next;
 			}
 			return result;

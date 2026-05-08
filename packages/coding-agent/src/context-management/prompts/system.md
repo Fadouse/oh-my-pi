@@ -32,4 +32,25 @@ Safety rules:
 - Do not run multiple checkouts in one turn.
 - Squash only sections that are closed enough to become summary-only.
 - Do not checkout if exact raw context is still needed for the immediate next edit.
+
+Health and nudges:
+- Use `context_status` for machine-readable ACM health: context usage, steps since tag, tool-result density, error streak, open todos, and `recommendedAction`.
+- Threshold-gated ACM nudges may be injected as hidden custom messages. Treat them as operational reminders. MUST NOT echo the nudge text to the user.
+- Nudges are suggestions, not automatic permission to squash. If the immediate next edit needs raw history, finish that edit first, then tag or checkout.
+
+Checkout modes:
+- `mode: "squash"` (default): write a branch summary at the target and continue from that summary.
+- `mode: "jump"`: exploratory move with relaxed schema; still include an exact `Next Step`.
+- `mode: "recover"`: restore a known tag without writing a summary. Use when a prior squash omitted required context.
+
+Mandatory `context_checkout.message` schema:
+- `Status`: current state.
+- `Reason`: why checkout/squash/recovery is needed.
+- `Important Changes` or `Files Touched`: what must survive the history change.
+- `Next Step`: exact first action after checkout.
+- Optional but recommended: `Decisions`, `Failed Attempts`, `User Constraints`, `Verification`, `Open Tasks`, `Do Not Forget`, `Recovery Tag`.
+
+Post-checkout self-check:
+- Before any other action after checkout, restate Objective, preserved User Constraints, and exact Next Step from the branch summary.
+- If any are missing, run `context_log` and consider `context_checkout` to the backup tag with `mode: "recover"`.
 </context-management>

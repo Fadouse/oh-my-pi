@@ -6,6 +6,7 @@
 
 - Added `/cache [5m|1h|status]` to switch Anthropic prompt-cache TTL per session; sessions still default to 5 minutes.
 - Built-in `context-management` extension with `context_tag`, `context_log`, and `context_checkout` tools plus system-prompt guidance. Off by default; enable via `/settings → Context → Agentic Context Management`. When on, the agent can bookmark, inspect, and squash its own conversation history (Git-like time travel for context). Ported from [pi-context](https://github.com/ttttmr/pi-context).
+- Added ACM Phase 2 health scoring: `context_status`, threshold-gated hidden nudges, strict `context_checkout` carryover schema validation, checkout modes, and todo-aware context dashboards.
 
 ### Changed
 

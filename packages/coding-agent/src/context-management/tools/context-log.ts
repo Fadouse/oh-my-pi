@@ -1,7 +1,10 @@
 import { Type } from "@sinclair/typebox";
+import { Settings } from "../../config/settings";
 import type { ContextUsage, ToolDefinition } from "../../extensibility/extensions";
 import type { SessionEntry, SessionManager } from "../../session/session-manager";
+import { computeContextHealth, type HealthSnapshot } from "../health";
 import { entryRole, getMessagePreview, normalizePreview } from "../helpers";
+import { getHealthThresholds } from "./context-status";
 
 export const contextLogSchema = Type.Object({
 	limit: Type.Optional(Type.Number({ description: "History limit for visible entries (default: 50)." })),
@@ -16,9 +19,12 @@ export const contextLogSchema = Type.Object({
 export interface ContextLogDetails {
 	visibleEntries: number;
 	hiddenEntries: number;
+	health: HealthSnapshot;
 }
 
-export function createContextLogTool(): ToolDefinition<typeof contextLogSchema, ContextLogDetails> {
+export function createContextLogTool(
+	configuredSettings?: Settings,
+): ToolDefinition<typeof contextLogSchema, ContextLogDetails> {
 	return {
 		name: "context_log",
 		label: "Context Log",
@@ -26,6 +32,7 @@ export function createContextLogTool(): ToolDefinition<typeof contextLogSchema, 
 			"Show the history structure (status, messages, tags, milestones). Analogous to git log --graph --oneline --decorate.",
 		parameters: contextLogSchema,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const runtimeSettings = configuredSettings ?? Settings.isolated({ "contextManagement.enabled": true });
 			const sm = ctx.sessionManager as SessionManager;
 			const branch = sm.getBranch();
 			const currentLeafId = sm.getLeafId();
@@ -77,16 +84,26 @@ export function createContextLogTool(): ToolDefinition<typeof contextLogSchema, 
 
 			if (hiddenCount > 0) lines.push(`  :  ... (${hiddenCount} hidden messages) ...`);
 
+			const health = computeContextHealth({
+				sessionManager: sm,
+				usage: ctx.getContextUsage(),
+				thresholds: getHealthThresholds(runtimeSettings),
+			});
 			const hud = [
 				"[Context Dashboard]",
 				`• Context Usage:    ${formatUsage(ctx.getContextUsage())}`,
 				`• Segment Size:     ${segmentSize(branch, sm)}`,
+				`• Tool density:     ${(health.toolResultDensity * 100).toFixed(0)}% of last 20 entries`,
+				`• Error streak:     ${health.consecutiveErrors}`,
+				`• User milestone:   ${health.turnsSinceUserMilestone} entries ago`,
+				`• Open todos:       ${formatOpenTodos(health.openTodos)}`,
+				`• Recommendation:   ${health.recommendedAction}${health.reasons.length > 0 ? ` (${health.reasons.join("; ")})` : ""}`,
 				"---------------------------------------------------",
 			].join("\n");
 
 			return {
 				content: [{ type: "text", text: `${hud}\n${lines.join("\n") || "(Root Path Only)"}` }],
-				details: { visibleEntries: visibleEntries.length, hiddenEntries: hiddenTotal },
+				details: { visibleEntries: visibleEntries.length, hiddenEntries: hiddenTotal, health },
 			};
 		},
 	};
@@ -131,4 +148,9 @@ function segmentSize(branch: SessionEntry[], sm: SessionManager): string {
 		stepsSinceTag++;
 	}
 	return `${stepsSinceTag} steps since last tag '${nearestTagName}'`;
+}
+
+function formatOpenTodos(openTodos: HealthSnapshot["openTodos"]): string {
+	if (openTodos.length === 0) return "none";
+	return openTodos.map(todo => `${todo.phase} ${todo.inProgress} in_progress, ${todo.pending} pending`).join("; ");
 }

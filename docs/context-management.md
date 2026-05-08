@@ -4,13 +4,20 @@ Agentic Context Management (ACM) is a built-in `packages/coding-agent` extension
 
 Enable it in `/settings → Context → Agentic Context Management`. The setting key is `contextManagement.enabled`; it is off by default and takes effect on the next session (or after `/reload-plugins`).
 
-When enabled, omp registers three tools:
+When enabled, omp registers four tools:
 
 - `context_tag`: bookmark an existing session-tree entry with a unique semantic label.
-- `context_log`: render a compact history view with HEAD, user messages, tags, branch points, summaries, hidden-message gaps, and a context HUD.
+- `context_log`: render a compact history view with HEAD, user messages, tags, branch points, summaries, hidden-message gaps, context health, and open todos.
+- `context_status`: return the same ACM health snapshot as compact JSON for agent decisions.
 - `context_checkout`: create a branch summary at a target entry and navigate to that summary after the current agent turn ends.
-
 The extension does not expose a `context-management` skill. Instead, when ACM is enabled it appends ACM operating guidance directly to the model system prompt before each agent turn, similar to dynamic-context-pruning style plugins.
+
+
+## Health and nudges
+
+ACM computes a per-turn health snapshot from context usage, distance from the nearest tag, recent tool-result density, consecutive tool errors, user-message distance, and the latest `todo_write` phases. The snapshot recommends one of `ok`, `tag`, `squash`, or `recover`.
+
+`context_log` shows the health dashboard for humans and the agent. `context_status` exposes the same data as JSON. When `contextManagement.nudges` is enabled, ACM can inject a hidden one-turn reminder only when thresholds degrade and the cooldown has elapsed; nudges do not modify the cache-stable ACM system prompt.
 
 ## How checkout works
 
@@ -23,7 +30,24 @@ The extension does not expose a `context-management` skill. Instead, when ACM is
 5. At `agent_end`, it calls `navigateTree(summaryEntryId, { summarize: false })` so the agent message list and UI are rebuilt from the new leaf.
 6. It injects a hidden follow-up prompt telling the agent to read the new summary and execute its **Next Step**.
 
+
+`context_checkout.message` is schema-validated by default (`contextManagement.checkout.strictSchema`). Strict mode requires `Reason`, `Next Step`, and either `Important Changes` or `Files Touched`. Failure returns a reusable template and does not create a backup tag, branch summary, or pending checkout.
+
+Checkout supports three modes:
+
+- `squash` (default): existing summary-and-navigate behavior.
+- `jump`: relaxed schema for exploratory movement, but still requires `Next Step`.
+- `recover`: target must be a known tag; ACM navigates to that tag without writing a summary.
+
 Checkout changes conversation history only. It does not modify working-tree files.
+
+
+## Settings
+
+- `contextManagement.enabled`: register ACM tools and guidance.
+- `contextManagement.nudges`: inject hidden health nudges when thresholds degrade.
+- `contextManagement.checkout.strictSchema`: enforce the checkout carryover schema.
+- `contextManagement.todoCoupling`: snapshot open todos into checkout summary details and surface them in the dashboard.
 
 ## Relationship to existing session commands
 

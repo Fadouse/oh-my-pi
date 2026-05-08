@@ -50,6 +50,13 @@ export function toolResult(name: string, text: string, timestamp = Date.now()): 
 	};
 }
 
+export function erroredToolResult(name: string, text: string, timestamp = Date.now()): ToolResultMessage {
+	return {
+		...toolResult(name, text, timestamp),
+		isError: true,
+	};
+}
+
 export function makeApi(session: SessionManager, sendMessages: unknown[] = []): ExtensionAPI {
 	return {
 		setLabel: (targetId: string, label?: string) => {
@@ -84,6 +91,19 @@ export function makeContext(session: SessionManager, overrides: Partial<Extensio
 		getSystemPrompt: () => [],
 		hasQueuedMessages: () => false,
 		...overrides,
+	};
+}
+
+export function todoPhasesMessage(
+	phases: Array<{
+		name: string;
+		tasks: Array<{ content: string; status: "pending" | "in_progress" | "completed" | "abandoned" }>;
+	}>,
+	timestamp = Date.now(),
+): ToolResultMessage {
+	return {
+		...toolResult("todo_write", "todo update", timestamp),
+		details: { phases },
 	};
 }
 

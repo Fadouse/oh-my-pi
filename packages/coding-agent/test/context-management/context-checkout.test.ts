@@ -27,7 +27,11 @@ describe("context_checkout", () => {
 		const tool = createContextCheckoutTool(api);
 		const result = await tool.execute(
 			"call",
-			{ target: "task-start", message: "Status. **Next Step**: continue.", backupTag: "raw-history" },
+			{
+				target: "task-start",
+				message: "Status: working\nReason: reduce context\nFiles Touched: none\nNext Step: continue.",
+				backupTag: "raw-history",
+			},
 			undefined,
 			undefined,
 			makeContext(session),
@@ -75,7 +79,7 @@ describe("context_checkout", () => {
 		sessionB.appendMessage(user("b-start"));
 		const aResult = await createContextCheckoutTool(makeApi(sessionA)).execute(
 			"call",
-			{ target: aTarget, message: "A summary. **Next Step**: continue A." },
+			{ target: aTarget, message: "Reason: isolate session\nFiles Touched: none\nNext Step: continue A." },
 			undefined,
 			undefined,
 			makeContext(sessionA),
@@ -88,6 +92,85 @@ describe("context_checkout", () => {
 		expect(peekPending(sessionA.getSessionId())?.summaryEntryId).toBe(aResult.details?.summaryEntryId);
 		await harness.emit("agent_end", makeContext(sessionA, { navigateTree: navA }));
 		expect(navA).toHaveBeenCalledWith(aResult.details?.summaryEntryId, { summarize: false });
+	});
+
+	it("rejects strict schema failures before mutating session", async () => {
+		const session = SessionManager.inMemory();
+		const target = session.appendMessage(user("start"));
+		const leaf = session.appendMessage(user("work"));
+		const tool = createContextCheckoutTool(makeApi(session));
+		let error: unknown;
+		try {
+			await tool.execute(
+				"call",
+				{ target, message: "Status: missing next step", backupTag: "raw-history" },
+				undefined,
+				undefined,
+				makeContext(session),
+			);
+		} catch (err) {
+			error = err;
+		}
+		expect(error).toBeInstanceOf(Error);
+		expect(error instanceof Error ? error.message : "").toContain("nextStep");
+		expect(error instanceof Error ? error.message : "").toContain("Next Step:");
+		expect(session.getLabel(leaf)).toBeUndefined();
+		expect(peekPending(session.getSessionId())).toBeUndefined();
+		expect(session.getBranch().some(entry => entry.type === "branch_summary")).toBe(false);
+	});
+
+	it("stages recover mode to a known tag without creating a summary", async () => {
+		const session = SessionManager.inMemory();
+		const target = session.appendMessage(user("start"));
+		session.appendLabelChange(target, "task-start");
+		session.appendMessage(user("work"));
+		const result = await createContextCheckoutTool(makeApi(session)).execute(
+			"call",
+			{
+				target: "task-start",
+				message: "Reason: recover raw context\nFiles Touched: none\nNext Step: resume.",
+				mode: "recover",
+			},
+			undefined,
+			undefined,
+			makeContext(session),
+		);
+		expect(result.details?.mode).toBe("recover");
+		expect(session.getBranch().some(entry => entry.type === "branch_summary")).toBe(false);
+		const harness = createExtensionHarness(session);
+		const navigateTree = vi.fn(async () => ({ cancelled: false }));
+		await harness.emit("agent_end", makeContext(session, { navigateTree }));
+		expect(navigateTree).toHaveBeenCalledWith(target, { summarize: false });
+	});
+
+	it("copies open todos into branch summary details", async () => {
+		const session = SessionManager.inMemory();
+		const target = session.appendMessage(user("start"));
+		session.appendMessage(user("work"));
+		session.appendMessage({
+			role: "toolResult",
+			toolCallId: "call-todo",
+			toolName: "todo_write",
+			content: [{ type: "text", text: "updated" }],
+			details: {
+				phases: [{ name: "Implementation", tasks: [{ content: "finish", status: "pending" }] }],
+			},
+			isError: false,
+			timestamp: Date.now(),
+		});
+		const result = await createContextCheckoutTool(makeApi(session)).execute(
+			"call",
+			{ target, message: "Reason: preserve todo\nFiles Touched: none\nNext Step: continue." },
+			undefined,
+			undefined,
+			makeContext(session),
+		);
+		const summary = session.getEntry(result.details?.summaryEntryId ?? "");
+		if (summary?.type !== "branch_summary") throw new Error("Expected branch summary");
+		expect(summary.details).toMatchObject({
+			source: "context_checkout",
+			openTodos: [{ name: "Implementation", tasks: [{ content: "finish", status: "pending" }] }],
+		});
 	});
 });
 
