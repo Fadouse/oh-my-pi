@@ -202,6 +202,11 @@ describe("context_checkout", () => {
 				{ role: "user", content: "range end" },
 			],
 		});
+		expect(context.messages.map(message => (message.role === "user" ? message.content : message.role))).toEqual([
+			"keep before",
+			"branchSummary",
+			"later message",
+		]);
 	});
 
 	it("restores live todos from checkout summary details", async () => {

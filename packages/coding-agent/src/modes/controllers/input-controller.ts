@@ -695,7 +695,12 @@ export class InputController {
 				child.setExpanded(expanded);
 			}
 		}
-		this.ctx.ui.requestRender();
+		// Expansion can change the height of historical components anywhere in the
+		// chat, including above the visible viewport. A differential render can then
+		// anchor the changed lines at the wrong screen row or leave stale rows behind
+		// when collapsing; force a full redraw so expanded checkout ranges appear at
+		// their real position in history and collapse clears the old block.
+		this.ctx.ui.requestRender(true);
 	}
 
 	toggleThinkingBlockVisibility(): void {
