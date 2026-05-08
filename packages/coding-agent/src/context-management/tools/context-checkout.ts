@@ -78,7 +78,7 @@ export interface ContextCheckoutDetails {
 }
 
 export function createContextCheckoutTool(
-	api: ExtensionAPI,
+	_api: ExtensionAPI,
 	configuredSettings?: Settings,
 ): ToolDefinition<typeof contextCheckoutSchema, ContextCheckoutDetails> {
 	return {
@@ -165,7 +165,7 @@ export function createContextCheckoutTool(
 
 			let backupTagApplied: string | undefined;
 			if (backupTag && currentLeaf) {
-				api.setLabel(currentLeaf, backupTag);
+				sm.appendLabelChange(currentLeaf, backupTag);
 				backupTagApplied = backupTag;
 			}
 

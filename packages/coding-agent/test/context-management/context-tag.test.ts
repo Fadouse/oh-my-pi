@@ -23,6 +23,29 @@ describe("context_tag", () => {
 		expect(result.details).toEqual({ id, name: "task-start" });
 	});
 
+	it("does not require extension runtime actions to create labels", async () => {
+		const session = SessionManager.inMemory();
+		const id = session.appendMessage(user("start"));
+		const api = {
+			...makeApi(session),
+			setLabel: () => {
+				throw new Error(
+					"Extension runtime not initialized. Action methods cannot be called during extension loading.",
+				);
+			},
+		};
+
+		await createContextTagTool(api).execute(
+			"call",
+			{ name: "runtime-independent", target: id },
+			undefined,
+			undefined,
+			makeContext(session),
+		);
+
+		expect(session.getLabel(id)).toBe("runtime-independent");
+	});
+
 	it("resolves explicit HEAD to the current leaf", async () => {
 		const session = SessionManager.inMemory();
 		session.appendMessage(user("start"));

@@ -64,6 +64,36 @@ describe("context_checkout", () => {
 		expect(harness.sentMessages).toHaveLength(1);
 	});
 
+	it("does not require extension runtime actions to apply a backup tag", async () => {
+		const session = SessionManager.inMemory();
+		const target = session.appendMessage(user("start"));
+		session.appendLabelChange(target, "task-start");
+		const leaf = session.appendMessage(user("work"));
+		const api = {
+			...makeApi(session),
+			setLabel: () => {
+				throw new Error(
+					"Extension runtime not initialized. Action methods cannot be called during extension loading.",
+				);
+			},
+		};
+
+		await createContextCheckoutTool(api).execute(
+			"call",
+			{
+				target: "task-start",
+				message:
+					"Objective: test checkout\nStatus: working\nReason: reduce context\nFiles Touched: none\nUser Constraints: none\nCurrent Artifact: none\nNext Step: continue.",
+				backupTag: "raw-history",
+			},
+			undefined,
+			undefined,
+			makeContext(session),
+		);
+
+		expect(session.getLabel(leaf)).toBe("raw-history");
+	});
+
 	it("stages range checkout from model-selected start and end boundaries", async () => {
 		const session = SessionManager.inMemory();
 		const before = session.appendMessage(user("keep before"));

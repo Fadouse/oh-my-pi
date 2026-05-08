@@ -15,7 +15,7 @@ export interface ContextTagDetails {
 	error?: string;
 }
 
-export function createContextTagTool(api: ExtensionAPI): ToolDefinition<typeof contextTagSchema, ContextTagDetails> {
+export function createContextTagTool(_api: ExtensionAPI): ToolDefinition<typeof contextTagSchema, ContextTagDetails> {
 	return {
 		name: "context_tag",
 		label: "Context Tag",
@@ -34,7 +34,7 @@ export function createContextTagTool(api: ExtensionAPI): ToolDefinition<typeof c
 			if (!sm.getEntry(id)) {
 				throw new ToolError(`context_tag target not found: ${params.target ?? "HEAD"} (resolved to ${id})`);
 			}
-			api.setLabel(id, params.name);
+			sm.appendLabelChange(id, params.name);
 			return {
 				content: [{ type: "text", text: `Created tag '${params.name}' at ${id}` }],
 				details: { id, name: params.name },
