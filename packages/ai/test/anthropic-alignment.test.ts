@@ -129,7 +129,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(headers["Anthropic-Beta"]).toContain("advisor-tool-2026-03-01");
 		expect(headers["Anthropic-Beta"]).not.toContain("fine-grained-tool-streaming-2025-05-14");
 		expect(headers["User-Agent"]).toBe(`claude-cli/${claudeCodeVersion} (external, cli)`);
-		expect(headers.Accept).toBe("text/event-stream");
+		expect(headers.Accept).toBe("application/json");
 		expect(headers["x-client-request-id"]).toMatch(/^[0-9a-f-]{36}$/);
 		expect(headers["X-Claude-Code-Session-Id"]).toMatch(/^[0-9a-f-]{36}$/);
 		expect(claudeCodeHeaders["X-Stainless-Package-Version"]).toBe("0.81.0");
