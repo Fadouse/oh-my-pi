@@ -58,6 +58,9 @@ export function createContextCheckoutTool(
 			if (currentLeaf === targetId) {
 				return { content: [{ type: "text", text: `Already at target ${targetId}` }], details: { targetId } };
 			}
+			if (!sm.getEntry(targetId)) {
+				throw new ToolError(`context_checkout target not found: ${params.target} (resolved to ${targetId})`);
+			}
 
 			const mode = params.mode ?? "squash";
 			validateModeAndSchema({

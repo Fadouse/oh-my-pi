@@ -6,13 +6,17 @@ const INTERNAL_TOOLS = new Set(["context_tag", "context_log", "context_checkout"
 export const isInternalTool = (name: string): boolean => INTERNAL_TOOLS.has(name);
 
 export function resolveTargetId(sm: ReadonlySessionManager, target: string): string {
-	if (target.toLowerCase() === "root") {
+	const normalizedTarget = target.toLowerCase();
+	if (normalizedTarget === "head") {
+		return sm.getLeafId() ?? target;
+	}
+
+	if (normalizedTarget === "root") {
 		const tree = sm.getTree();
 		return tree.length > 0 ? tree[0].entry.id : target;
 	}
 
 	if (/^[0-9a-f]{8,}$/i.test(target)) return target;
-
 	const stack: SessionTreeNode[] = [...sm.getTree()];
 	while (stack.length > 0) {
 		const node = stack.pop()!;

@@ -71,6 +71,26 @@ describe("context_checkout", () => {
 		expect(peekPending(session.getSessionId())).toBeUndefined();
 	});
 
+	it("reports unresolved checkout targets before creating a summary", async () => {
+		const session = SessionManager.inMemory();
+		session.appendMessage(user("start"));
+		let error: unknown;
+		try {
+			await createContextCheckoutTool(makeApi(session)).execute(
+				"call",
+				{ target: "missing-target", message: "Reason: test\nFiles Touched: none\nNext Step: continue." },
+				undefined,
+				undefined,
+				makeContext(session),
+			);
+		} catch (err) {
+			error = err;
+		}
+		expect(error).toBeInstanceOf(Error);
+		expect(error instanceof Error ? error.message : "").toContain("context_checkout target not found");
+		expect(session.getBranch().some(entry => entry.type === "branch_summary")).toBe(false);
+	});
+
 	it("keeps pending checkout isolated by session id", async () => {
 		const sessionA = SessionManager.inMemory();
 		const aTarget = sessionA.appendMessage(user("a-start"));

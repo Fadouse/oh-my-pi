@@ -23,6 +23,41 @@ describe("context_tag", () => {
 		expect(result.details).toEqual({ id, name: "task-start" });
 	});
 
+	it("resolves explicit HEAD to the current leaf", async () => {
+		const session = SessionManager.inMemory();
+		session.appendMessage(user("start"));
+		const head = session.appendMessage(user("current"));
+		const result = await createContextTagTool(makeApi(session)).execute(
+			"call",
+			{ name: "head-tag", target: "HEAD" },
+			undefined,
+			undefined,
+			makeContext(session),
+		);
+		expect(session.getLabel(head)).toBe("head-tag");
+		expect(result.details).toEqual({ id: head, name: "head-tag" });
+	});
+
+	it("reports unresolved targets before mutating state", async () => {
+		const session = SessionManager.inMemory();
+		session.appendMessage(user("start"));
+		let error: unknown;
+		try {
+			await createContextTagTool(makeApi(session)).execute(
+				"call",
+				{ name: "bad", target: "missing-target" },
+				undefined,
+				undefined,
+				makeContext(session),
+			);
+		} catch (err) {
+			error = err;
+		}
+		expect(error).toBeInstanceOf(Error);
+		expect(error instanceof Error ? error.message : "").toContain("context_tag target not found");
+		expect(session.getEntries().some(entry => session.getLabel(entry.id) === "bad")).toBe(false);
+	});
+
 	it("auto-resolves past internal tool-only assistant and internal tool result entries", async () => {
 		const session = SessionManager.inMemory();
 		const stableId = session.appendMessage(assistantText("stable work"));

@@ -1,6 +1,7 @@
 import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI, ToolDefinition } from "../../extensibility/extensions";
 import type { SessionEntry, SessionManager } from "../../session/session-manager";
+import { ToolError } from "../../tools/tool-errors";
 import { findTagInTree, isAssistantInternalToolOnly, isInternalTool, resolveTargetId } from "../helpers";
 
 export const contextTagSchema = Type.Object({
@@ -30,6 +31,9 @@ export function createContextTagTool(api: ExtensionAPI): ToolDefinition<typeof c
 			}
 
 			const id = params.target ? resolveTargetId(sm, params.target) : resolveDefaultTagTarget(sm);
+			if (!sm.getEntry(id)) {
+				throw new ToolError(`context_tag target not found: ${params.target ?? "HEAD"} (resolved to ${id})`);
+			}
 			api.setLabel(id, params.name);
 			return {
 				content: [{ type: "text", text: `Created tag '${params.name}' at ${id}` }],
