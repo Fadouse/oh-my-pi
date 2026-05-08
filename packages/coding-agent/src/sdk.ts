@@ -32,6 +32,7 @@ import { ModelRegistry } from "./config/model-registry";
 import { formatModelString, parseModelPattern, parseModelString, resolveModelRoleValue } from "./config/model-resolver";
 import { loadPromptTemplates as loadPromptTemplatesInternal, type PromptTemplate } from "./config/prompt-templates";
 import { Settings, type SkillsSettings } from "./config/settings";
+import { createContextManagementExtensionWithSettings } from "./context-management";
 import { CursorExecHandlers } from "./cursor";
 import "./discovery";
 import { resolveConfigValue } from "./config/resolve-config-value";
@@ -1167,6 +1168,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 
 		const inlineExtensions: ExtensionFactory[] = options.extensions ? [...options.extensions] : [];
+		inlineExtensions.push(api => createContextManagementExtensionWithSettings(api, settings));
 		inlineExtensions.push(createAutoresearchExtension);
 		if (customTools.length > 0) {
 			inlineExtensions.push(createCustomToolsExtension(customTools));

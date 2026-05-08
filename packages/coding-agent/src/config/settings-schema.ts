@@ -1103,6 +1103,18 @@ export const SETTINGS_SCHEMA = {
 
 	"branchSummary.reserveTokens": { type: "number", default: 16384 },
 
+	// Agentic Context Management
+	"contextManagement.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "context",
+			label: "Agentic Context Management",
+			description:
+				"Register Git-like history tools (context_tag, context_log, context_checkout) and system-prompt guidance so the agent can bookmark, inspect, and squash conversation history. Takes effect on the next session.",
+		},
+	},
+
 	// Memories
 	// Legacy local-memory enable flag kept only for back-compat migration.
 	// Hidden from UI — users should use `memory.backend` instead.

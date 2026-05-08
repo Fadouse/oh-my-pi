@@ -148,8 +148,12 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		this.extension.commands.set(name, { name, ...options });
 	}
 
-	setLabel(label: string): void {
-		this.extension.label = label;
+	setLabel(...args: [label: string] | [targetId: string, label: string | undefined]): void {
+		if (args.length === 1) {
+			this.extension.label = args[0];
+			return;
+		}
+		this.runtime.setLabel(args[0], args[1]);
 	}
 
 	registerShortcut(

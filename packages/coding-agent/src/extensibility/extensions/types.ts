@@ -221,6 +221,15 @@ export interface ExtensionContext {
 	getContextUsage(): ContextUsage | undefined;
 	/** Compact the session context (interactive mode shows UI). */
 	compact(instructionsOrOptions?: string | CompactOptions): Promise<void>;
+	/**
+	 * Navigate to a different point in the session tree. Internally calls
+	 * session.navigateTree, which replaces the agent's message list, restores MCP
+	 * selections, and rebuilds the chat UI.
+	 *
+	 * **MUST NOT** be called mid-turn. Safe from agent_end, session_*, and command
+	 * handlers. Calling during a streaming turn corrupts agent state.
+	 */
+	navigateTree(targetId: string, options?: { summarize?: boolean }): Promise<{ cancelled: boolean }>;
 	/** Whether UI is available (false in print/RPC mode) */
 	hasUI: boolean;
 	/** Current working directory */

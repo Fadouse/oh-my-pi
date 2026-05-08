@@ -523,6 +523,7 @@ export class ExtensionUiController {
 						ui: uiContext,
 						getContextUsage: () => this.ctx.session.getContextUsage(),
 						compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
+						navigateTree: (targetId, options) => this.ctx.session.navigateTree(targetId, options),
 						hasUI: !this.ctx.isBackgrounded,
 						cwd: this.ctx.sessionManager.getCwd(),
 						sessionManager: this.ctx.session.sessionManager,

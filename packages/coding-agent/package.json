@@ -111,6 +111,18 @@
 			"types": "./src/autoresearch/tools/*.ts",
 			"import": "./src/autoresearch/tools/*.ts"
 		},
+		"./context-management": {
+			"types": "./src/context-management/index.ts",
+			"import": "./src/context-management/index.ts"
+		},
+		"./context-management/*": {
+			"types": "./src/context-management/*.ts",
+			"import": "./src/context-management/*.ts"
+		},
+		"./context-management/tools/*": {
+			"types": "./src/context-management/tools/*.ts",
+			"import": "./src/context-management/tools/*.ts"
+		},
 		"./capability": {
 			"types": "./src/capability/index.ts",
 			"import": "./src/capability/index.ts"

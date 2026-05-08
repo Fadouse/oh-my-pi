@@ -1,0 +1,1 @@
+`context_checkout` complete. The branch summary above replaces your previous turn's history. Re-read the summary, then execute the **Next Step** line from it. Do not attempt to reference details from before the checkout — they were intentionally squashed.
