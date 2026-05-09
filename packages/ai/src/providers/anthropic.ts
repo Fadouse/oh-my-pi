@@ -2322,7 +2322,6 @@ function isDeferredFromAnthropicRequest(tool: Tool): boolean {
 	return metadata.deferLoading === true || metadata.defer_loading === true;
 }
 
-
 function modelSupportsToolReference(modelId: string): boolean {
 	return !modelId.toLowerCase().includes("haiku");
 }

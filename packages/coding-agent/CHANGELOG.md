@@ -26,6 +26,25 @@
 - Fixed ACM checkout follow-up wording to make the post-checkout source-of-truth transition explicit without encouraging unnecessary history reads.
 - Fixed `context_log` empty-history output to return an explicit no-entry message instead of an ambiguous placeholder.
 
+## [14.8.0] - 2026-05-09
+### Added
+
+- Added hashline stale-anchor recovery by replaying edits against a session-scoped `read`/`search` snapshot and 3-way-merging them onto the current file when anchors no longer match
+
+### Fixed
+
+- Fixed legacy pi extensions failing to import their own bare-specifier dependencies (e.g. `import x from "pkg"`): files loaded via the `omp-legacy-pi-file:` namespace now pre-resolve bare imports against the extension's directory so the extension's own `node_modules` is honored.
+
+### Changed
+
+- Changed hashline success output to include a warning when stale-anchor recovery is used
+
+## [14.7.8] - 2026-05-08
+
+### Fixed
+
+- Fixed indefinite startup hang on large repos introduced in 14.7.6 ([#975](https://github.com/can1357/oh-my-pi/issues/975)) on two fronts: (1) `createAgentSession` was awaiting `buildAgentsMdSearch` and `buildWorkspaceTree` directly in its blocking `Promise.all`, bypassing the existing 5s preparation deadline that previously protected startup — both scans are now raced against a 5s deadline and fall back to the system-prompt fallback path on timeout; (2) `buildWorkspaceTree` now derives its listing from `git ls-files --cached --others --exclude-standard` when the workspace is a git worktree, which is O(index size) and avoids the per-call full-tree gitignore-aware native scan that the previous implementation triggered. Repos without git, or where the call fails / times out, transparently fall back to the previous native-glob path.
+
 ## [14.7.6] - 2026-05-07
 ### Changed
 

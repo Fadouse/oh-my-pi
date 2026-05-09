@@ -13,7 +13,7 @@ import {
 	modelsAreEqual,
 	type UsageReport,
 } from "@oh-my-pi/pi-ai";
-import type { Component, SlashCommand } from "@oh-my-pi/pi-tui";
+import type { Component, EditorTheme, SlashCommand } from "@oh-my-pi/pi-tui";
 import {
 	Container,
 	clearRenderCache,
@@ -1318,9 +1318,48 @@ export class InteractiveMode implements InteractiveModeContext {
 	initializeHookRunner(uiContext: ExtensionUIContext, hasUI: boolean): void {
 		this.#extensionUiController.initializeHookRunner(uiContext, hasUI);
 	}
-
 	createBackgroundUiContext(): ExtensionUIContext {
 		return this.#extensionUiController.createBackgroundUiContext();
+	}
+
+	setEditorComponent(
+		factory: ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor) | undefined,
+	): void {
+		const previousEditor = this.editor;
+		const previousText = previousEditor.getText();
+		const nextEditor = factory
+			? factory(this.ui, getEditorTheme(), this.keybindings)
+			: new CustomEditor(getEditorTheme());
+
+		nextEditor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
+		nextEditor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
+		nextEditor.onAutocompleteCancel = () => {
+			this.ui.requestRender(true);
+		};
+		nextEditor.onAutocompleteUpdate = () => {
+			this.ui.requestRender();
+		};
+		nextEditor.setMaxHeight(this.#computeEditorMaxHeight());
+		if (this.historyStorage) {
+			nextEditor.setHistoryStorage(this.historyStorage);
+		}
+		nextEditor.setText(previousText);
+
+		this.editorContainer.clear();
+		this.editor = nextEditor;
+		this.editorContainer.addChild(nextEditor);
+		this.ui.setFocus(nextEditor);
+
+		this.#inputController.setupKeyHandlers();
+		this.#inputController.setupEditorSubmitHandler();
+
+		void this.refreshSlashCommandState().catch(error => {
+			logger.warn("Failed to refresh slash command state for custom editor", { error: String(error) });
+		});
+
+		this.updateEditorBorderColor();
+		this.updateEditorTopBorder();
+		this.ui.requestRender();
 	}
 
 	// Event handling
