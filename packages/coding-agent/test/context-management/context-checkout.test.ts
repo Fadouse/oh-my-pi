@@ -611,6 +611,52 @@ describe("context_checkout", () => {
 		expect(navigateTree).toHaveBeenCalledWith(target, { summarize: false });
 	});
 
+	it("stages recover from a checkout backup tag after a squash was prepared", async () => {
+		const session = SessionManager.inMemory();
+		const anchor = session.appendMessage(user("anchor"));
+		session.appendLabelChange(anchor, "recover-anchor");
+		session.appendMessage(user("work"));
+		const rawLeaf = session.getLeafId() ?? "";
+		const tool = createContextCheckoutTool(makeApi(session));
+		const squash = await tool.execute(
+			"call",
+			{
+				startId: "m0002",
+				endId: "m0002",
+				message:
+					"Objective: squash before recover\nReason: test recovery\nFiles Touched: none\nUser Constraints: none\nCurrent Artifact: none\nNext Step: continue.",
+				backupTag: "recover-raw",
+			},
+			undefined,
+			undefined,
+			makeContext(session),
+		);
+		expect(squash.details?.recoveryCommand).toBe('context_checkout target="recover-raw" mode="recover"');
+		expect(session.getLabel(rawLeaf)).toBe("recover-raw");
+
+		const recover = await tool.execute(
+			"call",
+			{
+				target: "recover-raw",
+				mode: "recover",
+				message:
+					"Objective: recover raw\nReason: validate recover\nFiles Touched: none\nUser Constraints: none\nCurrent Artifact: none\nNext Step: resume raw.",
+			},
+			undefined,
+			undefined,
+			makeContext(session),
+		);
+
+		expect(recover.details?.mode).toBe("recover");
+		expect(recover.details?.targetId).toBe(rawLeaf);
+		expect(peekPending(session.getSessionId())?.navigateTargetId).toBe(rawLeaf);
+		const harness = createExtensionHarness(session);
+		const navigateTree = vi.fn(async () => ({ cancelled: false }));
+		await harness.emit("turn_end", makeContext(session, { abort: vi.fn() }));
+		await harness.emit("agent_end", makeContext(session, { navigateTree }));
+		expect(navigateTree).toHaveBeenCalledWith(rawLeaf, { summarize: false });
+	});
+
 	it("copies open todos into branch summary details", async () => {
 		const session = SessionManager.inMemory();
 		const target = session.appendMessage(user("start"));

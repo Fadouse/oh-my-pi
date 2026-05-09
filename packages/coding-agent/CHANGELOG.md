@@ -23,6 +23,8 @@
 - Fixed Anthropic cache-policy query-source propagation so top-level sessions send `repl_main_thread` and subagents send `agent:<id>`.
 - Fixed ACM checkout completion status and transcript redraw behavior so the checkout summary block appears immediately without a manual TUI refresh, and expanded original-history content stays inside the checkout block background.
 - Fixed ACM range checkout anchor failures to report that the previous entry is untagged without selecting a replacement boundary, and to return clearer staging/recovery details on success.
+- Fixed ACM checkout follow-up wording to make the post-checkout source-of-truth transition explicit without encouraging unnecessary history reads.
+- Fixed `context_log` empty-history output to return an explicit no-entry message instead of an ambiguous placeholder.
 
 ## [14.7.6] - 2026-05-07
 ### Changed

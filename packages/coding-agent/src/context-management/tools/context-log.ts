@@ -103,7 +103,7 @@ export function createContextLogTool(
 				].join("\n");
 
 				return {
-					content: [{ type: "text", text: `${hud}\n${lines.join("\n") || "(Root Path Only)"}` }],
+					content: [{ type: "text", text: `${hud}\n${lines.join("\n") || "(No context entries)"}` }],
 					details: { visibleEntries: visibleEntries.length, hiddenEntries: hiddenTotal, health },
 				};
 			} catch (error) {

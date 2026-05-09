@@ -51,6 +51,14 @@ describe("context_log", () => {
 		expect(text).toContain("• Context Usage:    Unknown");
 	});
 
+	it("returns an explicit empty-log message when no entries are available", async () => {
+		const session = SessionManager.inMemory();
+		const result = await createContextLogTool().execute("call", {}, undefined, undefined, makeContext(session));
+		const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+		expect(text).toContain("(No context entries)");
+		expect(result.details?.visibleEntries).toBe(0);
+	});
+
 	it("renders open todos in dashboard", async () => {
 		const session = SessionManager.inMemory();
 		session.appendMessage(user("root", 1));
