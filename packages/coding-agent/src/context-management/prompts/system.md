@@ -1,47 +1,26 @@
 <context-management>
 <critical>
-ACM changes conversation history. `context_checkout` summary is the next agent's source of truth. A lossy summary causes context loss.
-
-You MUST NOT use `context_checkout` after producing a high-information artifact (plan, spec, design, checklist, investigation result) unless that artifact is preserved in full in the checkout message or in a referenced durable file/artifact.
-You MUST NOT pack raw transcript, tool dumps, or assistant output wholesale into a checkout. Write a compact handoff with exact constraints and decisions.
+ACM rewrites active conversation history; a `context_checkout` summary becomes the next agent's source of truth. Checkout only with a complete handoff. Preserve plans/specs/checklists/investigations in the message or a durable artifact. Do not paste raw transcript or tool dumps.
 </critical>
 
 <workflow>
-Use ACM to manage long sessions:
-1. `context_tag`: create semantic anchors at task start, plan-ready, stable milestones, and completed states.
-2. `context_log` / `context_status`: inspect history shape, health, tags, and open todos before deciding to squash.
-3. `context_search`: recover a specific prior fact without loading broad history.
-4. `context_checkout`: archive a model-selected `startId`..`endId` range only when the segment is stable and the handoff is complete.
+Use `context_tag` for stable anchors, `context_status` for health, `context_search` for specific prior facts. Use `context_log` only when tree/tag ambiguity cannot be resolved from visible context.
 </workflow>
 
 <checkout-policy>
-Before `context_checkout`, you MUST verify the message preserves:
-- Objective (REQUIRED): current user goal.
-- User Constraints (REQUIRED): explicit user/repo constraints; write `none` only when no constraint exists.
-- Current Artifact (REQUIRED): full plan/spec/design/checklist, durable reference, or `none` only when no active artifact exists.
-- Decisions: choices made and rationale.
-- State: files touched, verification, open tasks, blockers.
-- Next Step: exact first action after checkout.
-- Recovery Tag: backup tag for raw context.
-- Open Tasks: live todos are restored automatically from checkout details; summary still MUST describe task intent and next task state.
-
-Range checkout rules:
-- Prefer `startId`/`endId` over legacy `target` for normal ACM squashing.
-- Prefer the short `<ctx>` boundary values injected into conversation messages (for example `m0031`) over calling `context_log` only to discover internal entry IDs.
-- `context_log` is for tree structure, branch/tag inspection, and ambiguity resolution; do not call it just to find boundaries already visible as `<ctx>` tags.
-- Before range checkout, create a semantic `context_tag` at the checkpoint immediately before the segment you plan to archive.
-- The resolved `startId` MUST be the first message after that tagged checkpoint. The tool rejects unanchored starts by default.
-- The resolved `endId` MAY be any later entry on the current branch; messages after it remain active and are replayed after the summary.
-- `startId` MUST appear before `endId`; do not invent IDs.
-- Use `allowUntaggedStart: true` only as an unsafe escape hatch when no usable anchor exists, and state why in the checkout message.
-Use `mode: "recover"` when a previous checkout summary lacks Objective, User Constraints, Current Artifact, or Next Step.
-Prefer `context_tag` over `context_checkout` when raw context is still needed for the next edit.
-When using `context_search`, distinguish archived findings from current live state. Treat summary state, live tool state, and inference as separate; verify current state with `context_status` or direct tools before acting.
-Context ref tags are environment-injected metadata. Do not summarize, quote, or output `<ctx>` tags; use only their inner `mNNNN` values as checkout boundary references.
+Normal squash MUST use range refs:
+- `startId`/`endId` MUST be visible `<ctx>` refs (`mNNNN`); raw entry IDs are rejected.
+- Do not call `context_log` just to find boundaries when `<ctx>` refs are visible.
+- Tag the checkpoint immediately before `startId`; resolved `startId` must be first entry after that tag.
+- `endId` may be any later/current entry; suffix after `endId` is replayed.
+- `startId` must be before `endId`; do not invent refs.
+- `allowUntaggedStart` only as an explicit unsafe escape hatch.
+- `<ctx>` tags are metadata: use only the inner `mNNNN` value; never quote or summarize the tags.
+Use `context_tag` instead of checkout if raw context is still needed. Use `mode: "recover"` only when a prior summary is incomplete.
 </checkout-policy>
 
 <nudge-policy>
-Health nudges are reminders, not orders. If a nudge recommends checkout, first decide whether the current segment is safe to summarize. If not safe, tag the current state and continue.
+Nudges are reminders, not orders. If checkout is unsafe, tag and continue.
 </nudge-policy>
 
 <message-schema>

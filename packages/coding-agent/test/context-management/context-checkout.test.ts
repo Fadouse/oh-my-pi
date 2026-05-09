@@ -104,8 +104,8 @@ describe("context_checkout", () => {
 		const result = await createContextCheckoutTool(makeApi(session)).execute(
 			"call",
 			{
-				startId: start,
-				endId: end,
+				startId: "m0002",
+				endId: "m0003",
 				topic: "Range Test",
 				message:
 					"Objective: archive completed range\nReason: completed range\nFiles Touched: none\nUser Constraints: none\nCurrent Artifact: none\nNext Step: continue.",
@@ -124,8 +124,8 @@ describe("context_checkout", () => {
 			topic: "Range Test",
 			startId: start,
 			endId: end,
-			startRef: start,
-			endRef: end,
+			startRef: "m0002",
+			endRef: "m0003",
 			parentId: anchor,
 			anchorTagId: before,
 			anchorTagName: "range-anchor",
@@ -165,6 +165,36 @@ describe("context_checkout", () => {
 		});
 	});
 
+	it("rejects raw entry ids as range checkout boundaries", async () => {
+		const session = SessionManager.inMemory();
+		const before = session.appendMessage(user("keep before"));
+		session.appendLabelChange(before, "raw-id-anchor");
+		const start = session.appendMessage(user("range start"));
+		const end = session.appendMessage(user("range end"));
+		let error: unknown;
+
+		try {
+			await createContextCheckoutTool(makeApi(session)).execute(
+				"call",
+				{
+					startId: start,
+					endId: end,
+					message:
+						"Objective: archive raw id range\nReason: completed range\nFiles Touched: none\nUser Constraints: none\nCurrent Artifact: none\nNext Step: continue.",
+				},
+				undefined,
+				undefined,
+				makeContext(session),
+			);
+		} catch (err) {
+			error = err;
+		}
+
+		expect(error).toBeInstanceOf(Error);
+		expect(error instanceof Error ? error.message : "").toContain("must use an injected <ctx> ref");
+		expect(session.getBranch().some(entry => entry.type === "branch_summary")).toBe(false);
+	});
+
 	it("rejects range checkout when start is not anchored after a tag", async () => {
 		const session = SessionManager.inMemory();
 		session.appendMessage(user("untagged before"));
@@ -176,8 +206,8 @@ describe("context_checkout", () => {
 			await createContextCheckoutTool(makeApi(session)).execute(
 				"call",
 				{
-					startId: start,
-					endId: end,
+					startId: "m0002",
+					endId: "m0003",
 					message:
 						"Objective: archive completed range\nReason: completed range\nFiles Touched: none\nUser Constraints: none\nCurrent Artifact: none\nNext Step: continue.",
 				},
@@ -202,8 +232,8 @@ describe("context_checkout", () => {
 		const result = await createContextCheckoutTool(makeApi(session)).execute(
 			"call",
 			{
-				startId: start,
-				endId: end,
+				startId: "m0002",
+				endId: "m0003",
 				allowUntaggedStart: true,
 				message:
 					"Objective: archive completed range\nReason: completed range\nFiles Touched: none\nUser Constraints: none\nCurrent Artifact: none\nNext Step: continue.",
@@ -233,8 +263,8 @@ describe("context_checkout", () => {
 			"call",
 			{
 				target: "   ",
-				startId: start,
-				endId: end,
+				startId: "m0002",
+				endId: "m0003",
 				topic: "   ",
 				message:
 					"Objective: archive completed range\nReason: completed range\nFiles Touched: none\nUser Constraints: none\nCurrent Artifact: none\nNext Step: continue.",
@@ -298,8 +328,8 @@ describe("context_checkout", () => {
 		const result = await createContextCheckoutTool(makeApi(session)).execute(
 			"call",
 			{
-				startId: start,
-				endId: end,
+				startId: "m0002",
+				endId: "m0003",
 				message:
 					"Objective: archive completed range\nReason: completed range\nFiles Touched: none\nUser Constraints: none\nCurrent Artifact: none\nNext Step: continue.",
 			},
@@ -352,8 +382,8 @@ describe("context_checkout", () => {
 		const result = await createContextCheckoutTool(makeApi(session)).execute(
 			"call",
 			{
-				startId: start,
-				endId: todo,
+				startId: "m0002",
+				endId: "m0003",
 				message:
 					"Objective: archive completed range\nReason: completed range\nFiles Touched: none\nUser Constraints: none\nCurrent Artifact: none\nOpen Tasks: Implementation finish checkout pending\nNext Step: continue.",
 			},

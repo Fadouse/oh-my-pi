@@ -2,7 +2,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { Type } from "@sinclair/typebox";
 import { Settings } from "../../config/settings";
 import type { ExtensionAPI, ToolDefinition } from "../../extensibility/extensions";
-import { resolveContextRef } from "../../session/context-refs";
+import { isContextRef, resolveContextRef } from "../../session/context-refs";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "../../session/session-manager";
 import { getLatestTodoPhasesFromEntries, type TodoPhase } from "../../tools/todo-write";
 import { ToolError } from "../../tools/tool-errors";
@@ -13,20 +13,17 @@ import { clearPending, setPending } from "../state";
 export const contextCheckoutSchema = Type.Object({
 	target: Type.Optional(
 		Type.String({
-			description:
-				"Legacy checkout target. Can be a tag name (e.g., 'task-start'), entry ID, or 'root'. Use either target, or startId/endId for range checkout.",
+			description: "Recovery-only target: tag, entry ID, or root. Normal squash uses startId/endId refs.",
 		}),
 	),
 	startId: Type.Optional(
 		Type.String({
-			description:
-				"Range checkout start boundary. Accepts a real entry ID or an injected <ctx> ref value such as m0007. By default, the resolved start must be immediately after a tagged checkpoint.",
+			description: "Range start. Required format: visible <ctx> ref mNNNN. Raw entry IDs rejected.",
 		}),
 	),
 	endId: Type.Optional(
 		Type.String({
-			description:
-				"Range checkout end boundary. Accepts a real entry ID or an injected <ctx> ref value such as m0012. Later entries after the resolved end are replayed after the summary.",
+			description: "Range end. Required format: visible <ctx> ref mNNNN. Raw entry IDs rejected.",
 		}),
 	),
 	topic: Type.Optional(
@@ -34,24 +31,21 @@ export const contextCheckoutSchema = Type.Object({
 	),
 	allowUntaggedStart: Type.Optional(
 		Type.Boolean({
-			description:
-				"Unsafe escape hatch for range checkout. By default, startId must be immediately after an existing context_tag anchor. Set true only when no usable anchor exists.",
+			description: "Unsafe range escape hatch; only when start cannot be anchored after context_tag.",
 		}),
 	),
 	message: Type.String({
 		description:
-			"Complete handoff for the new branch. MUST preserve objective, user constraints, Current Artifact, decisions, state, next step, and recovery tag. MUST NOT paste raw transcript or tool dumps.",
+			"Complete handoff. Preserve Objective, User Constraints, Current Artifact, decisions, state, Next Step, Recovery Tag. No raw transcript/tool dumps.",
 	}),
 	backupTag: Type.Optional(
 		Type.String({
-			description:
-				"Tag to apply to the current leaf before checkout. Use it to recover raw context if the handoff is incomplete.",
+			description: "Tag current leaf before checkout for raw-history recovery.",
 		}),
 	),
 	mode: Type.Optional(
 		Type.Union([Type.Literal("squash"), Type.Literal("jump"), Type.Literal("recover")], {
-			description:
-				"Checkout mode. squash creates a handoff summary; jump moves with relaxed schema; recover restores a known backup tag when a summary lost required context.",
+			description: "squash archives a ref range; jump relaxes schema; recover restores a tagged raw checkpoint.",
 		}),
 	),
 });
@@ -86,7 +80,7 @@ export function createContextCheckoutTool(
 		name: "context_checkout",
 		label: "Context Checkout",
 		description:
-			"Archive a model-selected conversation range into a compact checkout summary, then replace current context with that summary. Use startId/endId for range checkout; legacy target checkout remains for recovery/navigation.",
+			"Archive a visible <ctx> ref range into a compact summary, then switch context to that summary. Range startId/endId must be mNNNN refs; raw entry IDs are rejected.",
 		parameters: contextCheckoutSchema,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const runtimeSettings = configuredSettings ?? Settings.isolated({ "contextManagement.enabled": true });
@@ -116,7 +110,7 @@ export function createContextCheckoutTool(
 			if (!targetParam) {
 				throw new ToolError("context_checkout requires either target or both startId and endId");
 			}
-			const targetId = checkoutTarget?.parentId ?? resolveCheckoutRef(sm, targetParam);
+			const targetId = checkoutTarget?.parentId ?? resolveTargetId(sm, targetParam);
 			if (!checkoutTarget && currentLeaf === targetId) {
 				return { content: [{ type: "text", text: `Already at target ${targetId}` }], details: { targetId } };
 			}
@@ -268,8 +262,8 @@ function resolveRangeCheckoutTarget(
 		throw new ToolError("Range checkout requires both startId and endId");
 	}
 
-	const startId = resolveCheckoutRef(sm, startParam);
-	const endId = resolveCheckoutRef(sm, endParam);
+	const startId = resolveRangeCheckoutRef(sm, startParam, "startId");
+	const endId = resolveRangeCheckoutRef(sm, endParam, "endId");
 	const branch = sm.getBranch();
 	const startIndex = branch.findIndex(entry => entry.id === startId);
 	const endIndex = branch.findIndex(entry => entry.id === endId);
@@ -400,8 +394,18 @@ function replayEntry(sm: SessionManager, entry: SessionEntry): string {
 	}
 }
 
-function resolveCheckoutRef(sm: SessionManager, value: string): string {
-	return resolveContextRef(sm.getBranch(), value) ?? resolveTargetId(sm, value);
+function resolveRangeCheckoutRef(sm: SessionManager, value: string, parameterName: "startId" | "endId"): string {
+	const normalized = value.trim().toLowerCase();
+	if (!isContextRef(normalized)) {
+		throw new ToolError(
+			`context_checkout ${parameterName} must use an injected <ctx> ref such as m0007; raw entry IDs are not accepted for range checkout.`,
+		);
+	}
+	const resolved = resolveContextRef(sm.getBranch(), normalized);
+	if (!resolved) {
+		throw new ToolError(`context_checkout ${parameterName} ref not found on current branch: ${value}`);
+	}
+	return resolved;
 }
 
 function normalizeOptionalParam(value: string | undefined): string | undefined {

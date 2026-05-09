@@ -47,7 +47,7 @@ Checkout changes conversation history only. It does not modify working-tree file
 
 ## Range checkout
 
-For range checkout, the model supplies `startId` and `endId` from visible history IDs. By default, `startId` must be the first entry after an existing `context_tag` anchor: the entry immediately before `startId` must have a tag. This forces the model to declare a safe checkpoint before selecting the range. The selected inclusive range is replaced in the active message list by one `branch_summary` entry. The original entries remain in the session tree for recovery and UI expansion.
+For range checkout, the model supplies `startId` and `endId` as visible `<ctx>` refs such as `m0031`, not raw session entry IDs. Raw entry IDs are rejected for range checkout boundaries. By default, the resolved `startId` must be the first entry after an existing `context_tag` anchor: the entry immediately before the resolved start must have a tag. This forces the model to declare a safe checkpoint before selecting the range. The selected inclusive range is replaced in the active message list by one `branch_summary` entry. The original entries remain in the session tree for recovery and UI expansion.
 
 Range checkout may end before current HEAD. Entries after `endId` are replayed after the summary, so useful suffix context is not lost.
 
