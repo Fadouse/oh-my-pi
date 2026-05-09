@@ -131,6 +131,10 @@ describe("context_checkout", () => {
 			anchorTagName: "range-anchor",
 			entryIds: [start, end],
 		});
+		expect(result.details?.recoveryCommand).toBe('context_checkout target="range-raw" mode="recover"');
+		const resultText = result.content[0]?.type === "text" ? result.content[0].text : "";
+		expect(resultText).toContain("Range checkout staged: m0002..m0003");
+		expect(resultText).toContain('Recovery: context_checkout target="range-raw" mode="recover"');
 		expect(peekPending(session.getSessionId())?.summaryEntryId).toBe(result.details?.summaryEntryId);
 	});
 
@@ -165,6 +169,39 @@ describe("context_checkout", () => {
 		});
 	});
 
+	it("allows range checkout to start at any ref after an earlier tagged checkpoint", async () => {
+		const session = SessionManager.inMemory();
+		const checkpoint = session.appendMessage(user("checkpoint"));
+		session.appendLabelChange(checkpoint, "loose-anchor");
+		const skipped = session.appendMessage(user("skipped after anchor"));
+		const start = session.appendMessage(user("range start"));
+		const end = session.appendMessage(user("range end"));
+
+		const result = await createContextCheckoutTool(makeApi(session)).execute(
+			"call",
+			{
+				startId: "m0003",
+				endId: "m0004",
+				message:
+					"Objective: archive later range\nReason: completed later range\nFiles Touched: none\nUser Constraints: none\nCurrent Artifact: none\nNext Step: continue.",
+			},
+			undefined,
+			undefined,
+			makeContext(session),
+		);
+
+		expect(result.details?.range).toMatchObject({
+			startId: start,
+			endId: end,
+			startRef: "m0003",
+			endRef: "m0004",
+			parentId: skipped,
+			anchorTagId: checkpoint,
+			anchorTagName: "loose-anchor",
+			entryIds: [start, end],
+		});
+	});
+
 	it("rejects raw entry ids as range checkout boundaries", async () => {
 		const session = SessionManager.inMemory();
 		const before = session.appendMessage(user("keep before"));
@@ -195,11 +232,11 @@ describe("context_checkout", () => {
 		expect(session.getBranch().some(entry => entry.type === "branch_summary")).toBe(false);
 	});
 
-	it("rejects range checkout when start is not anchored after a tag", async () => {
+	it("rejects range checkout when start has no earlier tag on the branch", async () => {
 		const session = SessionManager.inMemory();
 		session.appendMessage(user("untagged before"));
-		const start = session.appendMessage(user("range start"));
-		const end = session.appendMessage(user("range end"));
+		session.appendMessage(user("range start"));
+		session.appendMessage(user("range end"));
 		let error: unknown;
 
 		try {
@@ -220,7 +257,7 @@ describe("context_checkout", () => {
 		}
 
 		expect(error).toBeInstanceOf(Error);
-		expect(String(error)).toContain("must be immediately after a tagged checkpoint");
+		expect(String(error)).toContain("no earlier tagged checkpoint");
 	});
 
 	it("allows explicitly unsafe untagged range checkout and records that fact", async () => {
@@ -376,8 +413,8 @@ describe("context_checkout", () => {
 		const before = session.appendMessage(user("keep before"));
 		session.appendLabelChange(before, "todo-anchor");
 		const anchor = session.getLeafId();
-		const start = session.appendMessage(user("range start"));
-		const todo = session.appendMessage(todoPhasesMessage(phases));
+		session.appendMessage(user("range start"));
+		session.appendMessage(todoPhasesMessage(phases));
 
 		const result = await createContextCheckoutTool(makeApi(session)).execute(
 			"call",

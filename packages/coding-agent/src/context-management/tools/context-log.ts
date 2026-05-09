@@ -21,7 +21,6 @@ export interface ContextLogDetails {
 	hiddenEntries: number;
 	health: HealthSnapshot;
 }
-
 export function createContextLogTool(
 	configuredSettings?: Settings,
 ): ToolDefinition<typeof contextLogSchema, ContextLogDetails> {
@@ -32,79 +31,89 @@ export function createContextLogTool(
 			"Show the history structure (status, messages, tags, milestones). Analogous to git log --graph --oneline --decorate.",
 		parameters: contextLogSchema,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const runtimeSettings = configuredSettings ?? Settings.isolated({ "contextManagement.enabled": true });
-			const sm = ctx.sessionManager as SessionManager;
-			const branch = sm.getBranch();
-			const currentLeafId = sm.getLeafId();
-			const verbose = params.verbose ?? false;
-			const limit = params.limit ?? 50;
-			const backboneIds = new Set(branch.map(entry => entry.id));
-			const sequence: SessionEntry[] = [];
+			try {
+				const runtimeSettings = configuredSettings ?? Settings.isolated({ "contextManagement.enabled": true });
+				const sm = ctx.sessionManager as SessionManager;
+				const branch = sm.getBranch();
+				const currentLeafId = sm.getLeafId();
+				const verbose = params.verbose ?? false;
+				const limit = params.limit ?? 50;
+				const backboneIds = new Set(branch.map(entry => entry.id));
+				const sequence: SessionEntry[] = [];
 
-			for (const entry of branch) {
-				sequence.push(entry);
-				for (const child of sm.getChildren(entry.id)) {
-					if ((child.type === "branch_summary" || child.type === "compaction") && !backboneIds.has(child.id)) {
-						sequence.push(child);
+				for (const entry of branch) {
+					sequence.push(entry);
+					for (const child of sm.getChildren(entry.id)) {
+						if ((child.type === "branch_summary" || child.type === "compaction") && !backboneIds.has(child.id)) {
+							sequence.push(child);
+						}
 					}
 				}
-			}
 
-			let visibleEntries = sequence.filter(entry => verbose || isInteresting(entry, sm, branch, currentLeafId));
-			if (visibleEntries.length > limit) visibleEntries = visibleEntries.slice(-limit);
-			const visibleSequenceIds = new Set(visibleEntries.map(entry => entry.id));
+				let visibleEntries = sequence.filter(entry => verbose || isInteresting(entry, sm, branch, currentLeafId));
+				if (visibleEntries.length > limit) visibleEntries = visibleEntries.slice(-limit);
+				const visibleSequenceIds = new Set(visibleEntries.map(entry => entry.id));
 
-			const lines: string[] = [];
-			let hiddenCount = 0;
-			let hiddenTotal = 0;
+				const lines: string[] = [];
+				let hiddenCount = 0;
+				let hiddenTotal = 0;
 
-			for (const entry of sequence) {
-				if (!visibleSequenceIds.has(entry.id)) {
-					hiddenCount++;
-					hiddenTotal++;
-					continue;
+				for (const entry of sequence) {
+					if (!visibleSequenceIds.has(entry.id)) {
+						hiddenCount++;
+						hiddenTotal++;
+						continue;
+					}
+					if (hiddenCount > 0) {
+						lines.push(`  :  ... (${hiddenCount} hidden messages) ...`);
+						hiddenCount = 0;
+					}
+
+					const role = entryRole(entry);
+					if (role === "CUSTOM_MESSAGE") continue;
+					const isHead = entry.id === currentLeafId;
+					const isRoot = branch.length > 0 && entry.id === branch[0].id;
+					const label = sm.getLabel(entry.id);
+					const meta = [isRoot ? "ROOT" : null, isHead ? "HEAD" : null, label ? `tag: ${label}` : null]
+						.filter((part): part is string => part !== null)
+						.join(", ");
+					const marker = isHead ? "*" : role === "USER" ? "•" : "|";
+					const body = normalizePreview(getMessagePreview(entry, sm, verbose));
+					lines.push(`${marker} ${entry.id}${meta ? ` (${meta})` : ""} [${role}] ${body}`.trimEnd());
 				}
-				if (hiddenCount > 0) {
-					lines.push(`  :  ... (${hiddenCount} hidden messages) ...`);
-					hiddenCount = 0;
-				}
 
-				const role = entryRole(entry);
-				if (role === "CUSTOM_MESSAGE") continue;
-				const isHead = entry.id === currentLeafId;
-				const isRoot = branch.length > 0 && entry.id === branch[0].id;
-				const label = sm.getLabel(entry.id);
-				const meta = [isRoot ? "ROOT" : null, isHead ? "HEAD" : null, label ? `tag: ${label}` : null]
-					.filter((part): part is string => part !== null)
-					.join(", ");
-				const marker = isHead ? "*" : role === "USER" ? "•" : "|";
-				const body = normalizePreview(getMessagePreview(entry, sm, verbose));
-				lines.push(`${marker} ${entry.id}${meta ? ` (${meta})` : ""} [${role}] ${body}`.trimEnd());
+				if (hiddenCount > 0) lines.push(`  :  ... (${hiddenCount} hidden messages) ...`);
+
+				const health = computeContextHealth({
+					sessionManager: sm,
+					usage: ctx.getContextUsage(),
+					thresholds: getHealthThresholds(runtimeSettings),
+				});
+
+				const hud = [
+					"[Context Dashboard]",
+					`• Context Usage:    ${formatUsage(ctx.getContextUsage())}`,
+					`• Segment Size:     ${segmentSize(branch, sm)}`,
+					`• Tool density:     ${(health.toolResultDensity * 100).toFixed(0)}% of last 20 entries`,
+					`• Error streak:     ${health.consecutiveErrors}`,
+					`• User milestone:   ${health.turnsSinceUserMilestone} entries ago`,
+					`• Open todos:       ${formatOpenTodos(health.openTodos)} (source: ${health.openTodosSource})`,
+					`• Recommendation:   ${health.recommendedAction}${health.reasons.length > 0 ? ` (${health.reasons.join("; ")})` : ""}`,
+					"---------------------------------------------------",
+				].join("\n");
+
+				return {
+					content: [{ type: "text", text: `${hud}\n${lines.join("\n") || "(Root Path Only)"}` }],
+					details: { visibleEntries: visibleEntries.length, hiddenEntries: hiddenTotal, health },
+				};
+			} catch (error) {
+				const payload = {
+					error: "context_log_failed",
+					message: error instanceof Error ? error.message : String(error),
+					entries: [],
+				};
+				return { content: [{ type: "text", text: JSON.stringify(payload) }], details: undefined };
 			}
-
-			if (hiddenCount > 0) lines.push(`  :  ... (${hiddenCount} hidden messages) ...`);
-
-			const health = computeContextHealth({
-				sessionManager: sm,
-				usage: ctx.getContextUsage(),
-				thresholds: getHealthThresholds(runtimeSettings),
-			});
-			const hud = [
-				"[Context Dashboard]",
-				`• Context Usage:    ${formatUsage(ctx.getContextUsage())}`,
-				`• Segment Size:     ${segmentSize(branch, sm)}`,
-				`• Tool density:     ${(health.toolResultDensity * 100).toFixed(0)}% of last 20 entries`,
-				`• Error streak:     ${health.consecutiveErrors}`,
-				`• User milestone:   ${health.turnsSinceUserMilestone} entries ago`,
-				`• Open todos:       ${formatOpenTodos(health.openTodos)} (source: ${health.openTodosSource})`,
-				`• Recommendation:   ${health.recommendedAction}${health.reasons.length > 0 ? ` (${health.reasons.join("; ")})` : ""}`,
-				"---------------------------------------------------",
-			].join("\n");
-
-			return {
-				content: [{ type: "text", text: `${hud}\n${lines.join("\n") || "(Root Path Only)"}` }],
-				details: { visibleEntries: visibleEntries.length, hiddenEntries: hiddenTotal, health },
-			};
 		},
 	};
 }

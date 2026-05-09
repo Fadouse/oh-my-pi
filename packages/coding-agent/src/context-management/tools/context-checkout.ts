@@ -7,7 +7,7 @@ import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager 
 import { getLatestTodoPhasesFromEntries, type TodoPhase } from "../../tools/todo-write";
 import { ToolError } from "../../tools/tool-errors";
 import { resolveTargetId } from "../helpers";
-import { parseCheckoutMessage, validateCheckoutSchema } from "../schema";
+import { type ParsedCheckoutMessage, parseCheckoutMessage, validateCheckoutSchema } from "../schema";
 import { clearPending, setPending } from "../state";
 
 export const contextCheckoutSchema = Type.Object({
@@ -70,6 +70,12 @@ export interface ContextCheckoutDetails {
 		replayedSuffixEntryIds?: string[];
 	};
 	openTodos?: TodoPhase[];
+	handoff?: {
+		ok: boolean;
+		missing: string[];
+		parsed: ParsedCheckoutMessage;
+	};
+	recoveryCommand?: string;
 }
 
 export function createContextCheckoutTool(
@@ -123,6 +129,10 @@ export function createContextCheckoutTool(
 				message: params.message,
 				strictSchema: runtimeSettings.get("contextManagement.checkout.strictSchema"),
 			});
+			const parsedHandoff = parseCheckoutMessage(params.message);
+			const handoffValidation = validateCheckoutSchema(parsedHandoff, {
+				strict: runtimeSettings.get("contextManagement.checkout.strictSchema"),
+			});
 
 			if (mode === "recover") {
 				const targetLabel = sm.getLabel(targetId);
@@ -154,7 +164,12 @@ export function createContextCheckoutTool(
 							text: `Recover checkout staged. Aborting current turn; will restore tag ${targetParamInput}.`,
 						},
 					],
-					details: { targetId, summaryEntryId: targetId, mode },
+					details: {
+						targetId,
+						summaryEntryId: targetId,
+						mode,
+						handoff: { ok: handoffValidation.ok, missing: handoffValidation.missing, parsed: parsedHandoff },
+					},
 				};
 			}
 
@@ -180,6 +195,7 @@ export function createContextCheckoutTool(
 				mode: "squash" | "jump" | "recover";
 				range?: ContextCheckoutDetails["range"];
 				openTodos?: TodoPhase[];
+				recoveryCommand?: string;
 			} = {
 				source: "context_checkout",
 				backupTag,
@@ -187,6 +203,8 @@ export function createContextCheckoutTool(
 				mode,
 				...(checkoutTarget ? { range: checkoutTarget.range } : {}),
 			};
+			const recoveryCommand = backupTag ? `context_checkout target="${backupTag}" mode="recover"` : undefined;
+			if (recoveryCommand) summaryDetails.recoveryCommand = recoveryCommand;
 			if (openTodos.length > 0) summaryDetails.openTodos = openTodos;
 			const summaryEntryId = sm.branchWithSummary(
 				checkoutTarget ? checkoutTarget.parentId : targetId,
@@ -216,13 +234,15 @@ export function createContextCheckoutTool(
 				});
 			}
 
+			const stagedText = checkoutTarget
+				? `Range checkout staged: ${checkoutTarget.startRef}..${checkoutTarget.endRef} -> summary ${summaryEntryId}.`
+				: `Checkout staged: ${targetParam} -> summary ${summaryEntryId}.`;
+			const recoveryText = recoveryCommand ? ` Recovery: ${recoveryCommand}.` : " Recovery: no backupTag supplied.";
 			return {
 				content: [
 					{
 						type: "text",
-						text: checkoutTarget
-							? `Range checkout staged. Aborting current turn; will replace ${checkoutTarget.startRef}..${checkoutTarget.endRef} with summary.`
-							: `Checkout staged. Aborting current turn; will rebase on ${targetParam}.`,
+						text: `${stagedText} Applies after turn end; new HEAD will be ${navigateTargetId}.${recoveryText}`,
 					},
 				],
 				details: {
@@ -232,6 +252,8 @@ export function createContextCheckoutTool(
 					mode,
 					range: checkoutTarget ? { ...checkoutTarget.range, replayedSuffixEntryIds } : undefined,
 					openTodos: openTodos.length > 0 ? openTodos : undefined,
+					handoff: { ok: handoffValidation.ok, missing: handoffValidation.missing, parsed: parsedHandoff },
+					recoveryCommand,
 				},
 			};
 		},
@@ -286,10 +308,14 @@ function resolveRangeCheckoutTarget(
 	const selectedEntries = branch.slice(startIndex, endIndex + 1);
 	const suffixEntries = branch.slice(endIndex + 1);
 	const parentId = startEntry.parentId;
-	const anchor = resolveRangeAnchor(sm, parentId);
+	const anchor = resolveRangeAnchor(sm, branch, startIndex);
 	if (!anchor && !options.allowUntaggedStart) {
 		throw new ToolError(
-			`Range checkout startId must be immediately after a tagged checkpoint. Tag the entry before ${startParam} with context_tag, choose a startId after the nearest tag, or set allowUntaggedStart only when no safe anchor exists.`,
+			[
+				"Range checkout startId must have a tagged checkpoint earlier on the current branch.",
+				`Resolved range: ${startParam}..${endParam}; no earlier tagged checkpoint was found.`,
+				"Choose a range after an existing tag, create an anchor yourself, or set allowUntaggedStart only when no safe anchor exists.",
+			].join("\n"),
 		);
 	}
 	return {
@@ -313,13 +339,16 @@ function resolveRangeCheckoutTarget(
 	};
 }
 
-function resolveRangeAnchor(sm: SessionManager, parentId: string | null): { id: string; name: string } | undefined {
-	if (!parentId) return undefined;
-	const directLabel = sm.getLabel(parentId);
-	if (directLabel) return { id: parentId, name: directLabel };
-	const parentEntry = sm.getEntry(parentId);
-	if (parentEntry?.type === "label" && parentEntry.label) {
-		return { id: parentEntry.targetId, name: parentEntry.label };
+function resolveRangeAnchor(
+	sm: SessionManager,
+	branch: SessionEntry[],
+	startIndex: number,
+): { id: string; name: string } | undefined {
+	for (let i = startIndex - 1; i >= 0; i--) {
+		const entry = branch[i];
+		const directLabel = sm.getLabel(entry.id);
+		if (directLabel) return { id: entry.id, name: directLabel };
+		if (entry.type === "label" && entry.label) return { id: entry.targetId, name: entry.label };
 	}
 	return undefined;
 }

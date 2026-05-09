@@ -20,7 +20,7 @@ describe("context_tag", () => {
 		expect(firstContent?.type).toBe("text");
 		if (firstContent?.type !== "text") throw new Error("Expected text result");
 		expect(firstContent.text).toBe(`Created tag 'task-start' at ${id}`);
-		expect(result.details).toEqual({ id, name: "task-start" });
+		expect(result.details).toMatchObject({ id, name: "task-start", targetDescription: id });
 	});
 
 	it("does not require extension runtime actions to create labels", async () => {
@@ -58,7 +58,27 @@ describe("context_tag", () => {
 			makeContext(session),
 		);
 		expect(session.getLabel(head)).toBe("head-tag");
-		expect(result.details).toEqual({ id: head, name: "head-tag" });
+		expect(result.details).toMatchObject({ id: head, name: "head-tag", targetDescription: `HEAD -> ${head}` });
+	});
+
+	it("resolves visible context refs as explicit targets", async () => {
+		const session = SessionManager.inMemory();
+		session.appendMessage(user("start"));
+		const target = session.appendMessage(user("checkpoint"));
+		const result = await createContextTagTool(makeApi(session)).execute(
+			"call",
+			{ name: "ctx-tag", target: "m0002" },
+			undefined,
+			undefined,
+			makeContext(session),
+		);
+		expect(session.getLabel(target)).toBe("ctx-tag");
+		expect(result.details).toMatchObject({
+			id: target,
+			name: "ctx-tag",
+			ref: "m0002",
+			targetDescription: `m0002 -> ${target}`,
+		});
 	});
 
 	it("reports unresolved targets before mutating state", async () => {

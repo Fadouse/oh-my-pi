@@ -4,19 +4,15 @@ ACM rewrites active conversation history; a `context_checkout` summary becomes t
 </critical>
 
 <workflow>
-Use `context_tag` for stable anchors, `context_status` for health, `context_search` for specific prior facts. Use `context_log` only when tree/tag ambiguity cannot be resolved from visible context.
+Use `context_tag` for anchors, `context_status` for health, `context_search` for specific prior facts. Use `context_log` only for tree/tag ambiguity not visible from `<ctx>` refs.
 </workflow>
 
 <checkout-policy>
-Normal squash MUST use range refs:
-- `startId`/`endId` MUST be visible `<ctx>` refs (`mNNNN`); raw entry IDs are rejected.
-- Do not call `context_log` just to find boundaries when `<ctx>` refs are visible.
-- Tag the checkpoint immediately before `startId`; resolved `startId` must be first entry after that tag.
-- `endId` may be any later/current entry; suffix after `endId` is replayed.
-- `startId` must be before `endId`; do not invent refs.
-- `allowUntaggedStart` only as an explicit unsafe escape hatch.
-- `<ctx>` tags are metadata: use only the inner `mNNNN` value; never quote or summarize the tags.
-Use `context_tag` instead of checkout if raw context is still needed. Use `mode: "recover"` only when a prior summary is incomplete.
+Normal squash flow:
+1. Pick visible `<ctx>` refs: `startId="mNNNN"`, `endId="mNNNN"`; raw entry IDs are rejected.
+2. Ensure some earlier checkpoint on the current branch is tagged; `startId` may be any later visible ref you choose.
+3. Call `context_checkout` with refs, compact handoff message, and `backupTag` when recovery matters.
+Rules: do not call `context_log` only to find visible boundaries; `endId` may be current/later than start; suffix after `endId` is replayed; never invent refs; `allowUntaggedStart` only as explicit unsafe escape hatch. `<ctx>` tags are metadata: use only inner `mNNNN`, never quote/summarize tags. Use `context_tag` instead of checkout if raw context is still needed. Use `mode:"recover"` only for incomplete summaries.
 </checkout-policy>
 
 <nudge-policy>

@@ -1,17 +1,25 @@
 import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI, ToolDefinition } from "../../extensibility/extensions";
+import { buildContextRefMaps, resolveContextRef } from "../../session/context-refs";
 import type { SessionEntry, SessionManager } from "../../session/session-manager";
 import { ToolError } from "../../tools/tool-errors";
 import { findTagInTree, isAssistantInternalToolOnly, isInternalTool, resolveTargetId } from "../helpers";
 
 export const contextTagSchema = Type.Object({
 	name: Type.String({ description: "The tag/milestone name. Use meaningful names." }),
-	target: Type.Optional(Type.String({ description: "The commit ID to tag. Defaults to HEAD (current state)." })),
+	target: Type.Optional(
+		Type.String({
+			description:
+				"Entry ID, tag name, HEAD/root, or visible <ctx> ref mNNNN. Defaults to the latest committed non-internal checkpoint before this tool call.",
+		}),
+	),
 });
 
 export interface ContextTagDetails {
 	id?: string;
 	name?: string;
+	ref?: string;
+	targetDescription?: string;
 	error?: string;
 }
 
@@ -30,19 +38,26 @@ export function createContextTagTool(_api: ExtensionAPI): ToolDefinition<typeof 
 				return { content: [{ type: "text", text }], details: { error: text } };
 			}
 
-			const id = params.target ? resolveTargetId(sm, params.target) : resolveDefaultTagTarget(sm);
+			const id = params.target ? resolveTagTargetId(sm, params.target) : resolveDefaultTagTarget(sm);
 			if (!sm.getEntry(id)) {
 				throw new ToolError(`context_tag target not found: ${params.target ?? "HEAD"} (resolved to ${id})`);
 			}
 			sm.appendLabelChange(id, params.name);
+			const ref = buildContextRefMaps(sm.getBranch()).byEntryId.get(id);
+			const targetDescription = params.target
+				? `${params.target}${params.target !== id ? ` -> ${id}` : ""}`
+				: `latest committed checkpoint${ref ? ` ${ref}` : ""} -> ${id}`;
 			return {
-				content: [{ type: "text", text: `Created tag '${params.name}' at ${id}` }],
-				details: { id, name: params.name },
+				content: [{ type: "text", text: `Created tag '${params.name}' at ${targetDescription}` }],
+				details: { id, name: params.name, ...(ref ? { ref } : {}), targetDescription },
 			};
 		},
 	};
 }
 
+function resolveTagTargetId(sm: SessionManager, target: string): string {
+	return resolveContextRef(sm.getBranch(), target) ?? resolveTargetId(sm, target);
+}
 export function resolveDefaultTagTarget(sm: SessionManager): string {
 	const branch = sm.getBranch();
 	for (let i = branch.length - 1; i >= 0; i--) {

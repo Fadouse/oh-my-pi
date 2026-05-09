@@ -11,6 +11,8 @@
 ### Changed
 
 - Changed ACM checkout to inject compact `<ctx>` message boundary refs into model context and require those `mNNNN` refs for range checkout boundaries, rejecting raw entry IDs and reducing `context_log` calls used only to find IDs.
+- Changed ACM tag/status/search diagnostics to surface context refs, pending checkout handoff validation, and current-branch vs off-branch search results for clearer recovery paths.
+- Changed ACM range checkout anchoring so a tagged checkpoint may appear anywhere before `startId` on the current branch; `startId` no longer has to immediately follow the tag.
 - Changed MCP discovery mode to use Claude Code-style tool search for deferred MCP tools: deferred MCP schemas stay in the Anthropic request with `defer_loading`, the system prompt omits their full tool entries, and `search_tool_bm25` returns `tool_reference` blocks instead of mutating the active tool set.
 - Changed MCP tool-search deferral to respect Claude Code-style capability gates, falling back to normal discovery when experimental betas, Haiku models, or unsupported Anthropic-compatible proxy settings disable `tool_reference`.
 - Changed MCP tool-search auto mode to use Claude Code-style deferred tool size thresholds and persist discovered MCP tool references across compaction.
@@ -20,6 +22,7 @@
 
 - Fixed Anthropic cache-policy query-source propagation so top-level sessions send `repl_main_thread` and subagents send `agent:<id>`.
 - Fixed ACM checkout completion status and transcript redraw behavior so the checkout summary block appears immediately without a manual TUI refresh, and expanded original-history content stays inside the checkout block background.
+- Fixed ACM range checkout anchor failures to report that the previous entry is untagged without selecting a replacement boundary, and to return clearer staging/recovery details on success.
 
 ## [14.7.6] - 2026-05-07
 ### Changed

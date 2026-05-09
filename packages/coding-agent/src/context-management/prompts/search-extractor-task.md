@@ -9,6 +9,7 @@ Retrieved excerpts:
 Entry: {{id}}
 Role: {{role}}
 Type: {{type}}
+Location: {{location}}
 {{#if label}}Tag: {{label}}
 {{/if}}Timestamp: {{timestamp}}
 Text:

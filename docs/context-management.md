@@ -31,7 +31,7 @@ ACM computes a per-turn health snapshot from:
 
 The health recommendation is one of `ok`, `tag`, `squash`, or `recover`.
 
-`context_log` shows the dashboard for humans and the agent. `context_status` exposes the same data as JSON. When `contextManagement.nudges` is enabled, ACM may inject a hidden one-turn reminder only when thresholds degrade and the cooldown has elapsed. Nudges do not modify the cache-stable ACM system prompt.
+`context_log` shows the dashboard for humans and the agent. `context_status` exposes the same health data as JSON and, in verbose mode, pending-checkout handoff status. When `contextManagement.nudges` is enabled, ACM may inject a hidden one-turn reminder only when thresholds degrade and the cooldown has elapsed. Nudges do not modify the cache-stable ACM system prompt.
 
 ## Checkout modes
 
@@ -47,9 +47,9 @@ Checkout changes conversation history only. It does not modify working-tree file
 
 ## Range checkout
 
-For range checkout, the model supplies `startId` and `endId` as visible `<ctx>` refs such as `m0031`, not raw session entry IDs. Raw entry IDs are rejected for range checkout boundaries. By default, the resolved `startId` must be the first entry after an existing `context_tag` anchor: the entry immediately before the resolved start must have a tag. This forces the model to declare a safe checkpoint before selecting the range. The selected inclusive range is replaced in the active message list by one `branch_summary` entry. The original entries remain in the session tree for recovery and UI expansion.
+For range checkout, the model supplies `startId` and `endId` as visible `<ctx>` refs such as `m0031`, not raw session entry IDs. Raw entry IDs are rejected for range checkout boundaries. By default, the resolved `startId` must have an earlier tagged checkpoint somewhere on the current branch; it no longer needs to be the first entry immediately after the tag. This lets the model tag a visible checkpoint and then choose any later range boundary. The selected inclusive range is replaced in the active message list by one `branch_summary` entry. The original entries remain in the session tree for recovery and UI expansion.
 
-Range checkout may end before current HEAD. Entries after `endId` are replayed after the summary, so useful suffix context is not lost.
+Range checkout may end before current HEAD. Entries after `endId` are replayed after the summary, so useful suffix context is not lost. If a range is not anchored, the error reports that no earlier tagged checkpoint was found without selecting a boundary for the model.
 
 If no usable anchor exists, `allowUntaggedStart: true` is an explicit unsafe escape hatch. `mode: "jump"` also permits untagged starts for exploratory movement. Untagged range checkout records `details.range.untaggedStartAllowed` so logs and UI can distinguish it from a checkpoint-anchored squash.
 
@@ -65,7 +65,7 @@ Range checkout stores `details.range` with:
 - suffix entry IDs
 - replayed suffix entry IDs
 
-Optional string parameters are normalized before mode selection. Blank `target`, `startId`, `endId`, `topic`, and `backupTag` values are treated as omitted, so UI/tool-call serializers may include empty fields without forcing the wrong checkout mode.
+Optional string parameters are normalized before mode selection. Blank `target`, `startId`, `endId`, `topic`, and `backupTag` values are treated as omitted, so UI/tool-call serializers may include empty fields without forcing the wrong checkout mode. Successful checkout staging returns `summaryEntryId`, planned new head, handoff validation, and a recovery command when `backupTag` is provided.
 
 ## Deferred checkout lifecycle
 

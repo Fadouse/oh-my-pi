@@ -45,6 +45,7 @@ export interface ContextSearchCandidate {
 	timestamp: string;
 	score: number;
 	text: string;
+	location: "current_branch" | "off_branch";
 	preview: string;
 }
 
@@ -71,6 +72,7 @@ interface SearchDocument {
 	label?: string;
 	timestamp: string;
 	text: string;
+	location: "current_branch" | "off_branch";
 	weightedText: string;
 	tokens: string[];
 	trigrams: string[];
@@ -152,15 +154,21 @@ export function collectSearchDocuments(
 	scope: "current_branch" | "current_tree",
 ): SearchDocument[] {
 	const sm = ctx.sessionManager;
+	const branchIds = new Set(sm.getBranch().map(entry => entry.id));
 	const entries = scope === "current_branch" ? sm.getBranch() : flattenTree(sm.getTree());
 	return entries
 		.map(entry => {
 			const label = sm.getLabel(entry.id);
 			const role = entryRole(entry);
 			const preview = getMessagePreview(entry, sm, true);
-			const textParts = [entry.id, entry.type, role, label, preview].filter((part): part is string => Boolean(part));
+			const location: SearchDocument["location"] = branchIds.has(entry.id) ? "current_branch" : "off_branch";
+			const textParts = [entry.id, entry.type, role, label, location, preview].filter((part): part is string =>
+				Boolean(part),
+			);
 			const text = textParts.join("\n");
-			const weightedText = [label, label, label, entry.id, entry.type, role, preview].filter(Boolean).join(" ");
+			const weightedText = [label, label, label, entry.id, entry.type, role, location, preview]
+				.filter(Boolean)
+				.join(" ");
 			return {
 				entry,
 				id: entry.id,
@@ -168,6 +176,7 @@ export function collectSearchDocuments(
 				role,
 				...(label ? { label } : {}),
 				timestamp: entry.timestamp,
+				location,
 				text,
 				weightedText,
 				tokens: tokenize(weightedText),
@@ -308,7 +317,7 @@ function renderContextSearchResult(details: ContextSearchDetails): string {
 	for (const candidate of details.candidates) {
 		const label = candidate.label ? ` tag: ${candidate.label}` : "";
 		lines.push(
-			`- ${candidate.id} [${candidate.role}/${candidate.type}] score=${candidate.score.toFixed(2)}${label}`,
+			`- ${candidate.id} [${candidate.role}/${candidate.type}/${candidate.location}] score=${candidate.score.toFixed(2)}${label}`,
 			`  ${candidate.preview}`,
 		);
 	}
@@ -338,6 +347,7 @@ function toCandidate(result: ScoredDocument, maxContextChars: number): ContextSe
 		role: result.document.role,
 		...(result.document.label ? { label: result.document.label } : {}),
 		timestamp: result.document.timestamp,
+		location: result.document.location,
 		score: Number(result.score.toFixed(4)),
 		text,
 		preview: normalizePreview(text, 180),

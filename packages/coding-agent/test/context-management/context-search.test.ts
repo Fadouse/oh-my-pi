@@ -67,6 +67,8 @@ describe("context_search", () => {
 
 		expect(branchCandidates.map(candidate => candidate.id)).not.toContain(abandoned);
 		expect(treeCandidates.map(candidate => candidate.id)).toContain(abandoned);
+		expect(treeCandidates.find(candidate => candidate.id === abandoned)?.location).toBe("off_branch");
+		expect(branchDocuments.every(document => document.location === "current_branch")).toBe(true);
 		expect(treeDocuments.map(document => document.id)).toContain(root);
 	});
 

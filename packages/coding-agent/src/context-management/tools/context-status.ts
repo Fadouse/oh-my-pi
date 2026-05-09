@@ -3,7 +3,8 @@ import type { Settings } from "../../config/settings";
 import type { ToolDefinition } from "../../extensibility/extensions";
 import { computeContextHealth, type HealthSnapshot, type HealthThresholds } from "../health";
 import type { NudgeState } from "../nudge";
-import { peekNudgeState } from "../state";
+import { type ParsedCheckoutMessage, parseCheckoutMessage, validateCheckoutSchema } from "../schema";
+import { type PendingCheckout, peekNudgeState, peekPending } from "../state";
 
 export const contextStatusSchema = Type.Object({
 	verbose: Type.Optional(Type.Boolean({ description: "Include recent nudge state for this session." })),
@@ -12,6 +13,20 @@ export const contextStatusSchema = Type.Object({
 export interface ContextStatusDetails {
 	health: HealthSnapshot;
 	nudgeHistory?: NudgeState;
+	pendingCheckout?: PendingCheckoutStatus;
+}
+
+interface PendingCheckoutStatus {
+	present: boolean;
+	mode?: PendingCheckout["mode"];
+	origin?: string;
+	summaryEntryId?: string;
+	navigateTargetId?: string;
+	handoff?: {
+		ok: boolean;
+		missing: string[];
+		parsed: ParsedCheckoutMessage;
+	};
 }
 
 export function createContextStatusTool(
@@ -24,18 +39,44 @@ export function createContextStatusTool(
 			"Inspect ACM health: usage, segment size, tag distance, tool-output density, error streak, todo state, and recommended next action. Use before deciding whether to tag, squash, or continue.",
 		parameters: contextStatusSchema,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const health = computeContextHealth({
-				sessionManager: ctx.sessionManager,
-				usage: ctx.getContextUsage(),
-				thresholds: getHealthThresholds(settings),
-			});
-			const nudgeHistory = params.verbose ? peekNudgeState(ctx.sessionManager.getSessionId()) : undefined;
-			const payload = params.verbose ? { health, nudgeHistory } : health;
-			return {
-				content: [{ type: "text", text: JSON.stringify(payload) }],
-				details: { health, nudgeHistory },
-			};
+			try {
+				const health = computeContextHealth({
+					sessionManager: ctx.sessionManager,
+					usage: ctx.getContextUsage(),
+					thresholds: getHealthThresholds(settings),
+				});
+				const nudgeHistory = params.verbose ? peekNudgeState(ctx.sessionManager.getSessionId()) : undefined;
+				const pendingCheckout = params.verbose
+					? describePendingCheckout(ctx.sessionManager.getSessionId())
+					: undefined;
+				const payload = params.verbose ? { health, nudgeHistory, pendingCheckout } : health;
+				return {
+					content: [{ type: "text", text: JSON.stringify(payload) }],
+					details: { health, nudgeHistory, pendingCheckout },
+				};
+			} catch (error) {
+				const payload = {
+					error: "context_status_failed",
+					message: error instanceof Error ? error.message : String(error),
+				};
+				return { content: [{ type: "text", text: JSON.stringify(payload) }], details: undefined };
+			}
 		},
+	};
+}
+
+function describePendingCheckout(sid: string): PendingCheckoutStatus {
+	const pending = peekPending(sid);
+	if (!pending) return { present: false };
+	const parsed = parseCheckoutMessage(pending.enrichedMessage);
+	const validation = validateCheckoutSchema(parsed, { strict: true });
+	return {
+		present: true,
+		mode: pending.mode,
+		origin: pending.origin,
+		summaryEntryId: pending.summaryEntryId,
+		navigateTargetId: pending.navigateTargetId,
+		handoff: { ok: validation.ok, missing: validation.missing, parsed },
 	};
 }
 
