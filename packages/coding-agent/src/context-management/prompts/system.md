@@ -26,16 +26,18 @@ Before `context_checkout`, you MUST verify the message preserves:
 - Open Tasks: live todos are restored automatically from checkout details; summary still MUST describe task intent and next task state.
 
 Range checkout rules:
-- Prefer `startId`/`endId` over legacy `target` checkout for normal ACM squashing.
-- Pick boundaries from IDs visible in `context_log`; the range is inclusive.
+- Prefer `startId`/`endId` over legacy `target` for normal ACM squashing.
+- Prefer the short `<ctx>` boundary values injected into conversation messages (for example `m0031`) over calling `context_log` only to discover internal entry IDs.
+- `context_log` is for tree structure, branch/tag inspection, and ambiguity resolution; do not call it just to find boundaries already visible as `<ctx>` tags.
 - Before range checkout, create a semantic `context_tag` at the checkpoint immediately before the segment you plan to archive.
-- `startId` MUST be the first message after that tagged checkpoint. The tool rejects unanchored starts by default.
-- `endId` MAY be any later message on the current branch; messages after `endId` remain active and are replayed after the summary.
+- The resolved `startId` MUST be the first message after that tagged checkpoint. The tool rejects unanchored starts by default.
+- The resolved `endId` MAY be any later entry on the current branch; messages after it remain active and are replayed after the summary.
 - `startId` MUST appear before `endId`; do not invent IDs.
 - Use `allowUntaggedStart: true` only as an unsafe escape hatch when no usable anchor exists, and state why in the checkout message.
 Use `mode: "recover"` when a previous checkout summary lacks Objective, User Constraints, Current Artifact, or Next Step.
 Prefer `context_tag` over `context_checkout` when raw context is still needed for the next edit.
 When using `context_search`, distinguish archived findings from current live state. Treat summary state, live tool state, and inference as separate; verify current state with `context_status` or direct tools before acting.
+Context ref tags are environment-injected metadata. Do not summarize, quote, or output `<ctx>` tags; use only their inner `mNNNN` values as checkout boundary references.
 </checkout-policy>
 
 <nudge-policy>

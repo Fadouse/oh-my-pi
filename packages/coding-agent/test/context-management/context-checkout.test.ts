@@ -134,6 +134,37 @@ describe("context_checkout", () => {
 		expect(peekPending(session.getSessionId())?.summaryEntryId).toBe(result.details?.summaryEntryId);
 	});
 
+	it("accepts injected context refs as range checkout boundaries", async () => {
+		const session = SessionManager.inMemory();
+		const before = session.appendMessage(user("keep before"));
+		session.appendLabelChange(before, "ref-anchor");
+		const anchor = session.getLeafId();
+		const start = session.appendMessage(user("range start"));
+		const end = session.appendMessage(user("range end"));
+
+		const result = await createContextCheckoutTool(makeApi(session)).execute(
+			"call",
+			{
+				startId: "m0002",
+				endId: "m0003",
+				message:
+					"Objective: archive ref range\nReason: completed range\nFiles Touched: none\nUser Constraints: none\nCurrent Artifact: none\nNext Step: continue.",
+			},
+			undefined,
+			undefined,
+			makeContext(session),
+		);
+
+		expect(result.details?.range).toMatchObject({
+			startId: start,
+			endId: end,
+			startRef: "m0002",
+			endRef: "m0003",
+			parentId: anchor,
+			entryIds: [start, end],
+		});
+	});
+
 	it("rejects range checkout when start is not anchored after a tag", async () => {
 		const session = SessionManager.inMemory();
 		session.appendMessage(user("untagged before"));

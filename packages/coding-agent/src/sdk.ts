@@ -96,6 +96,7 @@ import {
 } from "./secrets";
 import { AgentSession } from "./session/agent-session";
 import { AuthStorage } from "./session/auth-storage";
+import { injectContextRefsIntoMessages } from "./session/context-refs";
 import { convertToLlm } from "./session/messages";
 import { SessionManager } from "./session/session-manager";
 import { closeAllConnections } from "./ssh/connection-manager";
@@ -1680,9 +1681,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			});
 		};
 
-		// Final convertToLlm: chain block-images filter with secret obfuscation
+		// Final convertToLlm: chain context refs, block-images filter, and secret obfuscation.
 		const convertToLlmFinal = (messages: AgentMessage[]): Message[] => {
-			const converted = convertToLlmWithBlockImages(messages);
+			const converted = injectContextRefsIntoMessages(
+				convertToLlmWithBlockImages(messages),
+				messages,
+				sessionManager.getBranch(),
+			);
 			if (!obfuscator?.hasSecrets()) return converted;
 			return obfuscateMessages(obfuscator, converted);
 		};

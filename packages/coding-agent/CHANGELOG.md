@@ -10,6 +10,7 @@
 
 ### Changed
 
+- Changed ACM checkout to inject compact `<ctx>` message boundary refs into model context and accept those `mNNNN` refs in `context_checkout` boundaries, reducing `context_log` calls needed only to find entry IDs.
 - Changed MCP discovery mode to use Claude Code-style tool search for deferred MCP tools: deferred MCP schemas stay in the Anthropic request with `defer_loading`, the system prompt omits their full tool entries, and `search_tool_bm25` returns `tool_reference` blocks instead of mutating the active tool set.
 - Changed MCP tool-search deferral to respect Claude Code-style capability gates, falling back to normal discovery when experimental betas, Haiku models, or unsupported Anthropic-compatible proxy settings disable `tool_reference`.
 - Changed MCP tool-search auto mode to use Claude Code-style deferred tool size thresholds and persist discovered MCP tool references across compaction.

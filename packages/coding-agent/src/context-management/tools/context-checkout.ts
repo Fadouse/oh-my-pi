@@ -2,6 +2,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { Type } from "@sinclair/typebox";
 import { Settings } from "../../config/settings";
 import type { ExtensionAPI, ToolDefinition } from "../../extensibility/extensions";
+import { resolveContextRef } from "../../session/context-refs";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "../../session/session-manager";
 import { getLatestTodoPhasesFromEntries, type TodoPhase } from "../../tools/todo-write";
 import { ToolError } from "../../tools/tool-errors";
@@ -19,13 +20,13 @@ export const contextCheckoutSchema = Type.Object({
 	startId: Type.Optional(
 		Type.String({
 			description:
-				"Range checkout start boundary. Use an entry ID visible in context_log. By default, this entry must be immediately after a tagged checkpoint; the selected range is inclusive.",
+				"Range checkout start boundary. Accepts a real entry ID or an injected <ctx> ref value such as m0007. By default, the resolved start must be immediately after a tagged checkpoint.",
 		}),
 	),
 	endId: Type.Optional(
 		Type.String({
 			description:
-				"Range checkout end boundary. May be any entry on the current branch at or after startId; later entries are replayed after the summary.",
+				"Range checkout end boundary. Accepts a real entry ID or an injected <ctx> ref value such as m0012. Later entries after the resolved end are replayed after the summary.",
 		}),
 	),
 	topic: Type.Optional(
@@ -115,7 +116,7 @@ export function createContextCheckoutTool(
 			if (!targetParam) {
 				throw new ToolError("context_checkout requires either target or both startId and endId");
 			}
-			const targetId = checkoutTarget?.parentId ?? resolveTargetId(sm, targetParam);
+			const targetId = checkoutTarget?.parentId ?? resolveCheckoutRef(sm, targetParam);
 			if (!checkoutTarget && currentLeaf === targetId) {
 				return { content: [{ type: "text", text: `Already at target ${targetId}` }], details: { targetId } };
 			}
@@ -267,8 +268,8 @@ function resolveRangeCheckoutTarget(
 		throw new ToolError("Range checkout requires both startId and endId");
 	}
 
-	const startId = resolveTargetId(sm, startParam);
-	const endId = resolveTargetId(sm, endParam);
+	const startId = resolveCheckoutRef(sm, startParam);
+	const endId = resolveCheckoutRef(sm, endParam);
 	const branch = sm.getBranch();
 	const startIndex = branch.findIndex(entry => entry.id === startId);
 	const endIndex = branch.findIndex(entry => entry.id === endId);
@@ -397,6 +398,10 @@ function replayEntry(sm: SessionManager, entry: SessionEntry): string {
 		case "label":
 			return sm.appendLabelChange(entry.targetId, entry.label);
 	}
+}
+
+function resolveCheckoutRef(sm: SessionManager, value: string): string {
+	return resolveContextRef(sm.getBranch(), value) ?? resolveTargetId(sm, value);
 }
 
 function normalizeOptionalParam(value: string | undefined): string | undefined {
