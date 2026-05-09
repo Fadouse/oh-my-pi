@@ -31,21 +31,21 @@ describe("context-management nudges", () => {
 				health: { ...baseHealth, recommendedAction: "ok" },
 				state: undefined,
 				turn: 1,
-				cooldownTurns: 3,
+				cooldownTurns: 5,
 				hasPendingCheckout: false,
 			}),
 		).toBe(false);
 		expect(
-			shouldNudge({ health: baseHealth, state: undefined, turn: 1, cooldownTurns: 3, hasPendingCheckout: true }),
+			shouldNudge({ health: baseHealth, state: undefined, turn: 1, cooldownTurns: 5, hasPendingCheckout: true }),
 		).toBe(false);
 	});
 
 	it("debounces repeated recommendations but allows changed recommendations", () => {
 		const state = { lastNudgeTurn: 10, lastRecommendation: "squash" as const, lastNudgeAt: 1000 };
-		expect(shouldNudge({ health: baseHealth, state, turn: 12, cooldownTurns: 3, hasPendingCheckout: false })).toBe(
+		expect(shouldNudge({ health: baseHealth, state, turn: 14, cooldownTurns: 5, hasPendingCheckout: false })).toBe(
 			false,
 		);
-		expect(shouldNudge({ health: baseHealth, state, turn: 13, cooldownTurns: 3, hasPendingCheckout: false })).toBe(
+		expect(shouldNudge({ health: baseHealth, state, turn: 15, cooldownTurns: 5, hasPendingCheckout: false })).toBe(
 			true,
 		);
 		expect(
@@ -53,17 +53,17 @@ describe("context-management nudges", () => {
 				health: { ...baseHealth, recommendedAction: "tag", level: "info" },
 				state,
 				turn: 11,
-				cooldownTurns: 3,
+				cooldownTurns: 5,
 				hasPendingCheckout: false,
 			}),
 		).toBe(true);
 	});
 
-	it("halves cooldown for urgent nudges", () => {
+	it("uses the configured cooldown for urgent nudges", () => {
 		const state = { lastNudgeTurn: 10, lastRecommendation: "squash" as const, lastNudgeAt: 1000 };
 		const urgent = { ...baseHealth, level: "urge" as const };
-		expect(shouldNudge({ health: urgent, state, turn: 11, cooldownTurns: 4, hasPendingCheckout: false })).toBe(false);
-		expect(shouldNudge({ health: urgent, state, turn: 12, cooldownTurns: 4, hasPendingCheckout: false })).toBe(true);
+		expect(shouldNudge({ health: urgent, state, turn: 14, cooldownTurns: 5, hasPendingCheckout: false })).toBe(false);
+		expect(shouldNudge({ health: urgent, state, turn: 15, cooldownTurns: 5, hasPendingCheckout: false })).toBe(true);
 	});
 
 	it("keeps nudge state isolated by session", () => {

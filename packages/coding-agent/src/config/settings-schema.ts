@@ -1153,7 +1153,7 @@ export const SETTINGS_SCHEMA = {
 	"contextManagement.thresholds.densityWarn": { type: "number", default: 0.6 },
 	"contextManagement.thresholds.densityUrge": { type: "number", default: 0.8 },
 	"contextManagement.thresholds.errorsUrge": { type: "number", default: 3 },
-	"contextManagement.nudges.cooldownTurns": { type: "number", default: 3 },
+	"contextManagement.nudges.cooldownTurns": { type: "number", default: 5 },
 
 	// Memories
 	// Legacy local-memory enable flag kept only for back-compat migration.

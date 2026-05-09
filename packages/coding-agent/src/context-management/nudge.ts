@@ -15,8 +15,7 @@ export function shouldNudge(input: {
 }): boolean {
 	if (input.hasPendingCheckout) return false;
 	if (input.health.recommendedAction === "ok") return false;
-	const cooldown =
-		input.health.level === "urge" ? Math.max(1, Math.floor(input.cooldownTurns / 2)) : input.cooldownTurns;
+	const cooldown = input.cooldownTurns;
 	if (!input.state) return true;
 	if (input.health.recommendedAction !== input.state.lastRecommendation) return true;
 	return input.turn - input.state.lastNudgeTurn >= cooldown;
